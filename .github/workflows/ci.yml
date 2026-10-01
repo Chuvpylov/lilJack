@@ -6,6 +6,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -23,6 +26,10 @@ jobs:
           bash tests/run_liljack_native_tests.sh 2>&1 | tee native.log
       - name: Native suite tail (on failure)
         if: failure()
-        run: tail -n 80 native.log
+        run: |
+          tail -n 80 native.log
+          # Surface the failure as annotations, readable on the run page and via the public API.
+          grep -nE 'FAIL|fail|Abort|assert|rror|exit' native.log | grep -v warning | tail -n 8 | while IFS= read -r l; do echo "::error::$l"; done
+          tail -n 3 native.log | while IFS= read -r l; do echo "::error::tail: $l"; done
       - name: Python proofs
         run: bash tests/run_liljack_python_tests.sh
