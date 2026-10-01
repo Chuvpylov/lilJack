@@ -11,10 +11,18 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc pkg-config libsdl2-dev libfreetype6-dev libjson-c-dev ffmpeg python3
+          sudo apt-get install -y gcc pkg-config libsdl2-dev libfreetype6-dev libjson-c-dev ffmpeg python3 \
+            fonts-dejavu-core fonts-noto-mono fonts-noto-color-emoji fonts-noto-cjk fonts-noto-core
+      - name: Font files present
+        run: ls /usr/share/fonts/truetype/dejavu/ /usr/share/fonts/truetype/noto/ 2>/dev/null | head -20
       - name: Private-content guard
         run: bash tools/scan_private.sh
       - name: Native suite
-        run: bash tests/run_liljack_native_tests.sh
+        run: |
+          set -o pipefail
+          bash tests/run_liljack_native_tests.sh 2>&1 | tee native.log
+      - name: Native suite tail (on failure)
+        if: failure()
+        run: tail -n 80 native.log
       - name: Python proofs
         run: bash tests/run_liljack_python_tests.sh
