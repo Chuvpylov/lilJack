@@ -2,7 +2,7 @@
 """BMD reader/writer — the knowledge store's knowledge format, from the trainer side.
 
 Deliberately a *reimplementation of the format*, not of the knowledge store. the knowledge store owns the
-brain (HDF5) and the oracle; this module only reads and writes `.bmd` text so
+brain (HDF5) and the query engine; this module only reads and writes `.bmd` text so
 training data can be authored, converted and ingested as locons. Files produced
 here must open unchanged in the knowledge store.
 

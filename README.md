@@ -57,7 +57,7 @@ test suite with `LILJACK_HEADER_CAPTURE_DIR` / `LILJACK_POPUP_CAPTURE_DIR` set.
 
 ## Install
 
-Linux with gcc, pkg-config, SDL2, FreeType, json-c and python3. ffmpeg and
+Linux with gcc, pkg-config, SDL2, FreeType, json-c, python3 and Pillow. ffmpeg and
 yt-dlp are optional and only used by the media tile; tmux keeps sessions alive
 after the window closes.
 
