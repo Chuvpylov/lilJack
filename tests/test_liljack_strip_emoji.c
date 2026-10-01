@@ -37,5 +37,5 @@ int main(void){
     int over_text=footprints_over(w,(size_t)end,10,3,10,20);
     int dcs=0;for(off_t i=0;i+1<end;i++)dcs+=w[i]==0x1b&&w[i+1]=='P';
     printf("strip-emoji: DCS=%d; footprints over the emoji cells=%d; over a plain text cell=%d; \n",dcs,over_icon,over_text);
-    int ok=dcs>=1&&over_icon==0;printf("strip-emoji: %s\n",ok?"PASS":"FAIL");return ok?0:1;
+    int ok=dcs>=1&&over_icon==0;printf("strip-emoji: %s\n",ok?"PASS":"FAIL");free(w);return ok?0:1;
 }
