@@ -13,18 +13,26 @@ static char *grab(size_t *len){*len=(size_t)lseek(1,0,SEEK_END);char *p=malloc(*
     assert(pread(1,p,*len,0)==(ssize_t)*len);p[*len]=0;assert(lseek(1,0,SEEK_SET)==0);assert(ftruncate(1,0)==0);return p;}
 static uint32_t px[60*32];
 /* one DCS with its DECSC/CUP/DECRC wrapper → row, col, band count, max band width */
+/* Portable: no memmem/sscanf-%n (an implicit memmem on an older gcc returns a
+ * truncated int and the parser then dereferences garbage). The capture is
+ * NUL-terminated, so plain pointer walks are enough. */
+static const char *find_st(const char *q,const char *end){for(;q+1<end;q++)if(q[0]==0x1b&&q[1]=='\\')return q;return NULL;}
+static int read_int(const char **pp,const char *end,int *out){const char *p=*pp;int v=0,n=0;while(p<end&&*p>='0'&&*p<='9'){v=v*10+(*p-'0');p++;n++;}*pp=p;*out=v;return n>0;}
 static int next_dcs(const char *s,size_t n,size_t *at,int *row,int *col,int *bands,int *width,size_t *bytes){
     const char *p=s+*at,*end=s+n;
-    for(;p+2<end;p++)if(p[0]==0x1b&&p[1]=='['){int r,c,used=0;if(sscanf(p,"\033[%d;%dH\033P%n",&r,&c,&used)==2&&used){
-        const char *q=p+used,*st=memmem(q,(size_t)(end-q),"\033\\",2);if(!st)return 0;
-        int x=0,mx=0,b=1;const char *i=q;while(i<st&&*i!='q')i++;i++;
+    for(;p+2<end;p++)if(p[0]==0x1b&&p[1]=='['){
+        const char *h=p+2;int r,c;
+        if(!read_int(&h,end,&r)||h>=end||*h!=';')continue;h++;
+        if(!read_int(&h,end,&c)||h+2>=end||h[0]!='H'||h[1]!=0x1b||h[2]!='P')continue;
+        const char *q=h+3,*st=find_st(q,end);if(!st)return 0;
+        int x=0,mx=0,b=1;const char *i=q;while(i<st&&*i!='q')i++;if(i<st)i++;
         while(i<st){char ch=*i;
             if(ch=='#'){i++;while(i<st&&((*i>='0'&&*i<='9')||*i==';'))i++;continue;}
             if(ch=='$'){if(x>mx)mx=x;x=0;i++;continue;}
             if(ch=='-'){if(x>mx)mx=x;x=0;b++;i++;continue;}
-            if(ch=='!'){i++;int k=0;while(i<st&&*i>='0'&&*i<='9')k=k*10+(*i++-'0');x+=k;i++;continue;}
+            if(ch=='!'){i++;int k=0;while(i<st&&*i>='0'&&*i<='9')k=k*10+(*i++-'0');x+=k;if(i<st)i++;continue;}
             if(ch>=63&&ch<=126)x++;i++;}
-        if(x>mx)mx=x;*row=r-1;*col=c-1;*bands=b;*width=mx;*bytes=(size_t)(st+2-q);*at=(size_t)(st+2-s);return 1;}}
+        if(x>mx)mx=x;*row=r-1;*col=c-1;*bands=b;*width=mx;*bytes=(size_t)(st+2-q);*at=(size_t)(st+2-s);return 1;}
     return 0;
 }
 int main(void){
@@ -57,7 +65,8 @@ int main(void){
             if(row==irow&&col==icol&&width>=icols*10)continue;         /* the popup image itself */
             strips++;
             int hit=col<icol+icols&&col+cols>icol&&row<irow+irows&&row+rows>irow;
-            if(hit){bad++;fprintf(stderr,"frame %d: strip DCS at row %d col %d footprint %dx%d cells intersects the image (rows %d..%d, cols %d..%d)\n",frame,row,col,cols,rows,irow,irow+irows-1,icol,icol+icols-1);}
+            if(hit){bad++;fprintf(stderr,"frame %d: strip DCS at row %d col %d footprint %dx%d cells intersects the image (rows %d..%d, cols %d..%d); header:",frame,row,col,cols,rows,irow,irow+irows-1,icol,icol+icols-1);
+                const char *hd=out+at-bytes;for(size_t k=0;k<bytes&&k<48;k++)fprintf(stderr,hd[k]>=32&&hd[k]<127?"%c":"\\x%02x",(unsigned char)hd[k]);fputc('\n',stderr);}
         }
         free(out);
     }
