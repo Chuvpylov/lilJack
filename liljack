@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Terminal launch command for the native HUI/owkterm app.
+set -euo pipefail
+export LILJACK_REPO
+LILJACK_REPO=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# ⚠ RUN FROM THE REPO, ALWAYS. The C app takes its default project from the
+# current directory, so a desktop-entry launch (wezterm/mate-terminal starting
+# in $HOME) opened with the WRONG cwd and the room arrangement came up empty.
+# cd here so the project resolves to the repo no matter how this was launched.
+cd -- "$LILJACK_REPO"
+# lilJack is standalone. LILJACK_TOOLBOX_ROOT optionally points at a sibling toolbox.
+export PYTHONPATH="$LILJACK_REPO:$LILJACK_REPO/toolbox${LILJACK_TOOLBOX_ROOT:+:$LILJACK_TOOLBOX_ROOT/toolbox}${PYTHONPATH:+:$PYTHONPATH}"
+case "${1:-}" in
+    owkterm)
+        shift
+        binary=$(bash "$LILJACK_REPO/liljack_app/build.sh" owkterm)
+        exec "$binary" "$@"
+        ;;
+    room|session|agent)
+        exec python3 -m liljack_app.cli "$@"
+        ;;
+esac
+binary=$(bash "$LILJACK_REPO/liljack_app/build.sh")
+exec "$binary" "$@"

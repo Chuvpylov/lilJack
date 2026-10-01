@@ -1,0 +1,427 @@
+{
+  "version": 1,
+  "tokens": {
+    "divider": {
+      "rgb": "#1c2b45",
+      "glyph": ""
+    },
+    "divider-hot": {
+      "rgb": "#ffd54a",
+      "glyph": ""
+    },
+    "bg": {
+      "rgb": "#060b14",
+      "glyph": ""
+    },
+    "panel": {
+      "rgb": "#0d1626",
+      "glyph": ""
+    },
+    "edge": {
+      "rgb": "#1c2b45",
+      "glyph": ""
+    },
+    "surf2": {
+      "rgb": "#142238",
+      "glyph": ""
+    },
+    "surf3": {
+      "rgb": "#1e3a5e",
+      "glyph": ""
+    },
+    "green": {
+      "rgb": "#ffd54a",
+      "glyph": ""
+    },
+    "text": {
+      "rgb": "#e1efff",
+      "glyph": ""
+    },
+    "dim": {
+      "rgb": "#8aaed0",
+      "glyph": ""
+    },
+    "cyan": {
+      "rgb": "#5bbcff",
+      "glyph": ""
+    },
+    "amber": {
+      "rgb": "#ffd54a",
+      "glyph": ""
+    },
+    "red": {
+      "rgb": "#ff7373",
+      "glyph": ""
+    },
+    "button_active": {
+      "rgb": "#19466d",
+      "glyph": ""
+    },
+    "button_idle": {
+      "rgb": "#102d4b",
+      "glyph": ""
+    },
+    "ended": {
+      "rgb": "#4a6280",
+      "glyph": ""
+    },
+    "unavailable_bg": {
+      "rgb": "#2a1420",
+      "glyph": ""
+    },
+    "disabled": {
+      "rgb": "#44607f",
+      "glyph": ""
+    },
+    "task_active": {
+      "rgb": "#8fd98f",
+      "glyph": ""
+    },
+    "task_meta": {
+      "rgb": "#6b8299",
+      "glyph": ""
+    },
+    "dependency": {
+      "rgb": "#8a7a4a",
+      "glyph": ""
+    },
+    "canvas_fg": {
+      "rgb": "#b0ffb0",
+      "glyph": ""
+    },
+    "canvas_bg": {
+      "rgb": "#030b03",
+      "glyph": ""
+    },
+    "notice_bg": {
+      "rgb": "#2a1d00",
+      "glyph": ""
+    },
+    "notice_fg": {
+      "rgb": "#ffc94a",
+      "glyph": ""
+    },
+    "scrollbar": {
+      "rgb": "#7fa5c4",
+      "glyph": ""
+    },
+    "graph_low": {
+      "rgb": "#88eba5",
+      "glyph": ""
+    },
+    "graph_mid": {
+      "rgb": "#e7c67e",
+      "glyph": ""
+    },
+    "graph_high": {
+      "rgb": "#e47676",
+      "glyph": ""
+    },
+    "ansi_0": {
+      "rgb": "#08130f",
+      "glyph": ""
+    },
+    "ansi_1": {
+      "rgb": "#e47676",
+      "glyph": ""
+    },
+    "ansi_2": {
+      "rgb": "#88eba5",
+      "glyph": ""
+    },
+    "ansi_3": {
+      "rgb": "#e7c67e",
+      "glyph": ""
+    },
+    "ansi_4": {
+      "rgb": "#85adf5",
+      "glyph": ""
+    },
+    "ansi_5": {
+      "rgb": "#c6a0e8",
+      "glyph": ""
+    },
+    "ansi_6": {
+      "rgb": "#8cd8d3",
+      "glyph": ""
+    },
+    "ansi_7": {
+      "rgb": "#d5e9dc",
+      "glyph": ""
+    },
+    "ansi_8": {
+      "rgb": "#6e8e79",
+      "glyph": ""
+    },
+    "ansi_9": {
+      "rgb": "#ff9999",
+      "glyph": ""
+    },
+    "ansi_10": {
+      "rgb": "#acffc2",
+      "glyph": ""
+    },
+    "ansi_11": {
+      "rgb": "#ffdf9a",
+      "glyph": ""
+    },
+    "ansi_12": {
+      "rgb": "#a6c9ff",
+      "glyph": ""
+    },
+    "ansi_13": {
+      "rgb": "#e0b8ff",
+      "glyph": ""
+    },
+    "ansi_14": {
+      "rgb": "#aff9ed",
+      "glyph": ""
+    },
+    "ansi_15": {
+      "rgb": "#f4fff8",
+      "glyph": ""
+    },
+    "icon_claude": {
+      "rgb": "#e1efff",
+      "glyph": "\ud83e\udde0"
+    },
+    "icon_codex": {
+      "rgb": "#e1efff",
+      "glyph": "\ud83d\udee0"
+    },
+    "icon_deepseek": {
+      "rgb": "#e1efff",
+      "glyph": "\ud83d\udd0e"
+    },
+    "icon_shell": {
+      "rgb": "#e1efff",
+      "glyph": "\ud83c\udf3f"
+    },
+    "icon_user": {
+      "rgb": "#e1efff",
+      "glyph": "\ud83d\udc64"
+    },
+    "room": {
+      "rgb": "#e1efff",
+      "glyph": "\u25a3"
+    },
+    "standalone": {
+      "rgb": "#e1efff",
+      "glyph": "\u25c7"
+    },
+    "check": {
+      "rgb": "#e1efff",
+      "glyph": "\u2713"
+    },
+    "active": {
+      "rgb": "#e1efff",
+      "glyph": "\u25cf"
+    },
+    "blocked": {
+      "rgb": "#e1efff",
+      "glyph": "\u25a0"
+    },
+    "empty": {
+      "rgb": "#e1efff",
+      "glyph": "\u25cb"
+    },
+    "close": {
+      "rgb": "#e1efff",
+      "glyph": "\u00d7"
+    },
+    "resize": {
+      "rgb": "#e1efff",
+      "glyph": "\u2198"
+    },
+    "disconnected": {
+      "rgb": "#e1efff",
+      "glyph": "\u25c9"
+    },
+    "up": {
+      "rgb": "#e1efff",
+      "glyph": "\u25b4"
+    },
+    "down": {
+      "rgb": "#e1efff",
+      "glyph": "\u25be"
+    },
+    "ellipsis": {
+      "rgb": "#e1efff",
+      "glyph": "\u2026"
+    },
+    "ring_dot": {
+      "rgb": "#e1efff",
+      "glyph": "\u2022"
+    },
+    "rule_h": {
+      "rgb": "#e1efff",
+      "glyph": "\u2500"
+    },
+    "rule_v": {
+      "rgb": "#e1efff",
+      "glyph": "\u2502"
+    },
+    "scroll_thumb": {
+      "rgb": "#e1efff",
+      "glyph": "\u2590"
+    },
+    "scroll_track": {
+      "rgb": "#e1efff",
+      "glyph": "\u2595"
+    },
+    "prompt": {
+      "rgb": "#e1efff",
+      "glyph": "\u25b6"
+    },
+    "prompt_cursor": {
+      "rgb": "#e1efff",
+      "glyph": "\u258e"
+    },
+    "return_mark": {
+      "rgb": "#e1efff",
+      "glyph": "\u23ce"
+    },
+    "rule_filled": {
+      "rgb": "#e1efff",
+      "glyph": "\u2501"
+    },
+    "lab_bg": {
+      "rgb": "#08101a",
+      "glyph": ""
+    },
+    "lab_panel": {
+      "rgb": "#101b29",
+      "glyph": ""
+    },
+    "lab_edge": {
+      "rgb": "#354354",
+      "glyph": ""
+    },
+    "lab_surf2": {
+      "rgb": "#203750",
+      "glyph": ""
+    },
+    "lab_surf3": {
+      "rgb": "#304760",
+      "glyph": ""
+    },
+    "lab_text": {
+      "rgb": "#e4eaf0",
+      "glyph": ""
+    },
+    "lab_dim": {
+      "rgb": "#8798aa",
+      "glyph": ""
+    },
+    "lab_blue": {
+      "rgb": "#4eb7ff",
+      "glyph": ""
+    },
+    "lab_gold": {
+      "rgb": "#ffcf40",
+      "glyph": ""
+    },
+    "lab_red": {
+      "rgb": "#ff6070",
+      "glyph": ""
+    },
+    "lab_green": {
+      "rgb": "#40df80",
+      "glyph": ""
+    },
+    "lab_graph_bg": {
+      "rgb": "#102030",
+      "glyph": ""
+    },
+    "lab_hairline": {
+      "rgb": "#657586",
+      "glyph": ""
+    },
+    "lab_white": {
+      "rgb": "#ffffff",
+      "glyph": ""
+    },
+    "warning": {
+      "rgb": "#e1efff",
+      "glyph": "\u26a0"
+    },
+    "lock": {
+      "rgb": "#e1efff",
+      "glyph": "\ud83d\udd12"
+    },
+    "chat": {
+      "rgb": "#e1efff",
+      "glyph": "\ud83d\udcac"
+    },
+    "up_arrow": {
+      "rgb": "#e1efff",
+      "glyph": "\u2191"
+    },
+    "directory": {
+      "rgb": "#e1efff",
+      "glyph": "\u25b8"
+    },
+    "symlink": {
+      "rgb": "#e1efff",
+      "glyph": "\u21e2"
+    },
+    "tree_last": {
+      "rgb": "#e1efff",
+      "glyph": "\u2514"
+    },
+    "tree_mid": {
+      "rgb": "#e1efff",
+      "glyph": "\u251c"
+    }
+  },
+  "settings": {
+    "graph.bucket_ms": {
+      "int": 50,
+      "min": 25,
+      "max": 1000,
+      "unit": "ms"
+    },
+    "graph.repaint_ms": {
+      "int": 100,
+      "min": 50,
+      "max": 2000,
+      "unit": "ms"
+    },
+    "metrics.poll_ms": {
+      "int": 25,
+      "min": 25,
+      "max": 1000,
+      "unit": "ms"
+    },
+    "metrics.label_hold_ms": {
+      "int": 500,
+      "min": 100,
+      "max": 5000,
+      "unit": "ms"
+    },
+    "divider.idle_px": {
+      "int": 1,
+      "min": 1,
+      "max": 3,
+      "unit": "px"
+    },
+    "divider.hot_px": {
+      "int": 3,
+      "min": 1,
+      "max": 6,
+      "unit": "px"
+    },
+    "tab.badge_min_cells": {
+      "int": 6,
+      "min": 4,
+      "max": 12,
+      "unit": "cells"
+    },
+    "effects.scanlines": {
+      "int": 0,
+      "min": 0,
+      "max": 1,
+      "unit": "bool"
+    }
+  }
+}

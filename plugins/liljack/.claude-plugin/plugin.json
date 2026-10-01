@@ -1,0 +1,7 @@
+{
+  "name": "liljack",
+  "version": "0.1.0",
+  "description": "lilJack — session memory for Claude Code: injects project TODO + similar past work on each prompt, archives every session verbatim (scrubbed) to a local store, extracts reasoning chains for training, and exposes project_context / project_todo / search_chains / project_history over MCP.",
+  "homepage": "https://github.com/Chuvpylov/lilJack",
+  "keywords": ["memory", "session-archive", "training-data", "todo", "hooks", "mcp"]
+}

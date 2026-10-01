@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=lilJack
+Comment=lilJack agent harness — rooms, agent terminals, media and metrics
+Exec=liljack-term
+Icon=liljack
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=liljack
+Keywords=agent;terminal;harness;claude;codex;deepseek;

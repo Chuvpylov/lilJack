@@ -1,0 +1,16 @@
+# lilJack sixel terminal — xterm-256color plus the Sxl (sixel) flag.
+#
+# tmux gates sixel on the ATTACH CLIENT's TERM carrying the `Sxl` boolean
+# capability (tty-features.c: tty_feature_sixel_capabilities = {"Sxl"}), checked
+# via tigetflag. No entry on the box advertises it, so tmux substitutes the
+# literal "SIXEL IMAGE (WxH)" placeholder. This entry is xterm-256color EXACTLY,
+# plus one boolean flag: every string/number capability that controls colour,
+# keys and line drawing is inherited unchanged, so a terminal that never draws a
+# sixel renders byte-identically to today.
+#
+# `use=xterm-256color` inherits the whole entry; `Sxl,` adds only the flag.
+# Compiled with `tic -x` (extended capabilities) into the lilJack cache; the
+# attach client falls back to plain xterm-256color if tic is unavailable.
+xterm-256color-sixel|tmux sixel passthrough terminal,
+	use=xterm-256color,
+	Sxl,

@@ -1,0 +1,6 @@
+{
+  "liljack": {
+    "command": "bash",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/mcp.sh"]
+  }
+}

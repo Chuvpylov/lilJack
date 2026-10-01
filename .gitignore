@@ -1,0 +1,16 @@
+build/
+__pycache__/
+*.pyc
+core
+*.core
+*.bak
+*.bak-*
+docs/**/*.png
+!docs/screenshots/*.png
+docs/**/*.ppm
+docs/**/*.log
+
+# private-content guard for the public repo
+toolbox/*
+!toolbox/liljack_*.py
+!toolbox/liljack_app

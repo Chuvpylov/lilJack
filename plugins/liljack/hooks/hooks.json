@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" inject", "timeout": 10, "statusMessage": "lilJack: injecting context"}]}
+    ],
+    "PreToolUse": [
+      {"hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" pretool", "timeout": 10}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" stop", "timeout": 30, "statusMessage": "liljack: archiving session"}]}
+    ]
+  }
+}
