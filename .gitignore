@@ -14,3 +14,6 @@ docs/**/*.log
 toolbox/*
 !toolbox/liljack_*.py
 !toolbox/liljack_app
+!toolbox/session_archive.py
+!toolbox/bmd.py
+!toolbox/liljack_status.sh
