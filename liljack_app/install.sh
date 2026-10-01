@@ -8,7 +8,7 @@ bin_dir=${LILJACK_BIN_DIR:-"$HOME/.local/bin"}
 mkdir -p -- "$bin_dir"
 target="$bin_dir/lilJack"
 if [[ -e "$target" || -L "$target" ]]; then
-    if [[ -L "$target" ]] || ! rg -q -F '# lilJack native workspace launcher' "$target"; then
+    if [[ -L "$target" ]] || ! grep -q -F '# lilJack native workspace launcher' "$target"; then
         echo 'An unrelated lilJack command already exists; refusing to overwrite it.' >&2
         exit 1
     fi
