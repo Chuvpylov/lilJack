@@ -1,10 +1,10 @@
 # toolbox/bmd.py (vendored from the the trainer project, corpus/bmd.py; stdlib only)
-"""BMD reader/writer — braider's knowledge format, from the the trainer side.
+"""BMD reader/writer — the knowledge store's knowledge format, from the trainer side.
 
-Deliberately a *reimplementation of the format*, not of braider. braider owns the
+Deliberately a *reimplementation of the format*, not of the knowledge store. the knowledge store owns the
 brain (HDF5) and the oracle; this module only reads and writes `.bmd` text so
 training data can be authored, converted and ingested as locons. Files produced
-here must open unchanged in braider.
+here must open unchanged in the knowledge store.
 
 Structure
     [[header]]      key: value lines (document metadata)
@@ -16,7 +16,7 @@ Structure
     [[footer]]      document-level assertions
     [[/footer]]
 
-Assertions — five forms (braider logic-dsl v0.2):
+Assertions — five forms (the knowledge store logic-dsl v0.2):
     fact(<pred>, <subj> [, <obj>]) [| confidence=0..1] [| source=] [| ts=]
     neg(<pred>, <subj> [, <obj>])  [| confidence=0..1]
     stmt(<pred>, <subj> [, <obj>]) | actor= | trust=0..1 [| ts=]
@@ -71,8 +71,8 @@ class Assertion:
     body: list = field(default_factory=list)   # rule only: body terms
 
     def render(self) -> str:
-        """Emit attributes INSIDE the parens — that is what braider's own files
-        do, and what braider reads back. Rules keep attrs after the body."""
+        """Emit attributes INSIDE the parens — that is what the knowledge store's own files
+        do, and what the knowledge store reads back. Rules keep attrs after the body."""
         attrs = "".join(f" | {k}={v}" for k, v in self.attrs.items())
         if self.form == "rule":
             s = f"rule({self.pred})"
@@ -94,7 +94,7 @@ class Assertion:
 
 _ATTR_SPLIT = re.compile(r"\s*\|\s*")
 # greedy inner so it binds to the LAST ')' — attributes live inside the parens
-# in real braider files, so a non-greedy match would truncate the arg list.
+# in real the knowledge store files, so a non-greedy match would truncate the arg list.
 # [a-z_] because real braids also contain calls like wiki_extract(...).
 _CALL = re.compile(r"^([a-z_]+)\s*\((.*)\)\s*(.*)$", re.S)
 
@@ -104,7 +104,7 @@ def _split_top(s: str, sep: str = ",") -> list:
 
     Quote-awareness is required, not cosmetic: free text carries commas
     ("establish ring level from physical accessibility, not capability") and
-    would otherwise be shredded into extra arguments. braider quotes such
+    would otherwise be shredded into extra arguments. the knowledge store quotes such
     strings too — see wiki_extract("...", "...").
     """
     out, depth, cur, quote = [], 0, "", None
@@ -154,7 +154,7 @@ def qval(s) -> str:
 def _take_attrs(text: str):
     """Split ' | k=v | k=v' off the end of `text`. Returns (rest, attrs).
 
-    Attributes live INSIDE the parens in every real braider file —
+    Attributes live INSIDE the parens in every real the knowledge store file —
     `fact(builds, acme, rockets | confidence=0.95 | source=press)` — even though
     logic-dsl.bmd documents them outside. Both are accepted; the files are the
     ground truth and are what we must round-trip.
@@ -211,7 +211,7 @@ def parse_assertion(line: str, canonical_only: bool = False):
     """One assertion line → Assertion. None for blank/comment. Raises on junk.
 
     `canonical_only=True` additionally rejects forms outside FORMS — use it to
-    validate MODEL output (parse-or-reject). Reading braider files leaves it
+    validate MODEL output (parse-or-reject). Reading the knowledge store files leaves it
     False, because real braids also carry calls like wiki_extract(...).
     """
     line = line.strip()
@@ -450,6 +450,6 @@ def _clean(attrs: dict) -> dict:
 
 
 def slug(text: str, maxlen: int = 48) -> str:
-    """Filesystem/predicate-safe slug — braider slugs are lowercase-hyphenated."""
+    """Filesystem/predicate-safe slug — the knowledge store slugs are lowercase-hyphenated."""
     s = re.sub(r"[^a-zA-Z0-9]+", "-", str(text)).strip("-").lower()
     return (s[:maxlen].rstrip("-")) or "unnamed"

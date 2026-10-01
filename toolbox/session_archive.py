@@ -54,10 +54,10 @@ LOCK_FILE       = ARCHIVE_ROOT / ".liljack.lock"   # exclusive lock for multi-in
 CONV_DIR        = ARCHIVE_ROOT / "conv"         # compact user/claude dialog logs
 
 # Apollo integration
-ORACLE_ROOT     = Path(os.environ.get("LILJACK_PROJECT") or Path(__file__).parent.parent)
-APOLLO_ROOT     = Path(os.environ.get("LILJACK_APOLLO_ROOT") or ORACLE_ROOT)
+PROJECT_ROOT     = Path(os.environ.get("LILJACK_PROJECT") or Path(__file__).parent.parent)
+APOLLO_ROOT     = Path(os.environ.get("LILJACK_APOLLO_ROOT") or PROJECT_ROOT)
 SECRETS_SCRIPTS = os.environ.get("LILJACK_SECRETS_SCRIPTS", "")   # dir holding scrub_archives.py (optional)
-JACK_REPO       = "liljack-sessions"          # Apollo repo name for session archive
+LILJACK_REPO       = "liljack-sessions"          # Apollo repo name for session archive
 APOLLO_SYNC_LOG = ARCHIVE_ROOT / "apollo_sync.jsonl"  # tracks what's been pushed
 
 # ── Secret gate ───────────────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ def _tar_scrubbed(src_dir: Path, dest_tar: Path, arcname: str) -> int:
 
 def _read_apollo_config() -> dict:
     """Read the remote store URL + ring token from <project>/.apollo/config (fallback: LILJACK_APOLLO_ROOT)."""
-    for config_path in [ORACLE_ROOT / ".apollo" / "config",
+    for config_path in [PROJECT_ROOT / ".apollo" / "config",
                         APOLLO_ROOT  / ".apollo" / "config"]:
         if not config_path.exists():
             continue
@@ -185,7 +185,7 @@ def _apollo_online(url: str, timeout: float = 1.5) -> bool:
 
 
 def _apollo_ring_token() -> str:
-    """Return the cerber ring token from .apollo/config, env, or empty string."""
+    """Return the ring token from .apollo/config, env, or empty string."""
     # Check env first
     tok = os.environ.get("APOLLO_RING", "").strip()
     if tok:
@@ -220,7 +220,7 @@ def _apollo_push_index(url: str, ring: int = 1) -> bool:
     """Push the full index.jsonl to Apollo."""
     if not INDEX_FILE.exists():
         return True
-    return _apollo_push_file(url, JACK_REPO, "index.jsonl",
+    return _apollo_push_file(url, LILJACK_REPO, "index.jsonl",
                               INDEX_FILE.read_bytes(), ring)
 
 
@@ -309,14 +309,14 @@ def sync_to_apollo(verbose: bool = False) -> tuple[int, int]:
         if not arc.exists():
             continue
         path_in_repo = meta["archive_path"]
-        ok = _apollo_push_file(url, JACK_REPO, path_in_repo, arc.read_bytes(), ring)
+        ok = _apollo_push_file(url, LILJACK_REPO, path_in_repo, arc.read_bytes(), ring)
         if ok:
             # Also push subagents archive if present
             sub_rel = meta.get("subagents_archive_path", "")
             if sub_rel:
                 sub_arc = ARCHIVE_ROOT / sub_rel
                 if sub_arc.exists():
-                    _apollo_push_file(url, JACK_REPO, sub_rel, sub_arc.read_bytes(), ring)
+                    _apollo_push_file(url, LILJACK_REPO, sub_rel, sub_arc.read_bytes(), ring)
             _mark_synced(sid, path_in_repo, meta.get("message_count"), meta.get("size_bytes"))
             pushed += 1
             if verbose:
@@ -345,7 +345,7 @@ def sync_to_apollo(verbose: bool = False) -> tuple[int, int]:
         pass
 
     if verbose and pushed:
-        print(f"[liljack] synced {pushed} session(s) to apollo://{JACK_REPO}")
+        print(f"[liljack] synced {pushed} session(s) to apollo://{LILJACK_REPO}")
     return pushed, skipped
 
 
@@ -785,11 +785,11 @@ def pc_scan(verbose: bool = False) -> dict:
     if verbose:
         print(f"[liljack] pc_scan → {len(records)} sources → {out_path}")
 
-    # Push to Apollo oracle-kb/pc_scan/ if reachable
+    # Push to the remote store project-kb/pc_scan/ if reachable
     url = _apollo_url()
     if url and _apollo_online(url):
         tok = _apollo_ring_token()
-        ok = _apollo_push_file(url, "oracle-kb",
+        ok = _apollo_push_file(url, "project-kb",
                                f"pc_scan/{scan_ts[:10]}.jsonl",
                                out_path.read_bytes())
         if verbose:
@@ -863,7 +863,7 @@ def mine_sessions(output_tsv: str = "/tmp/session_mine.tsv",
 def extract_pairs(project_filter: str = "", limit: int = 0, verbose: bool = False) -> int:
     """
     Extract (human_intent, action_type, tools_used, outcome) tuples from sessions.
-    Writes to oracle/orc_data/session_pairs.jsonl — fed to oracle KB on next liljack update.
+    Writes to <project>/orc_data/session_pairs.jsonl — fed to the project KB on next liljack update.
 
     Each pair record:
       {session_id, project, ts, human_intent, action_type, tools, tool_count, outcome_len}
@@ -950,7 +950,7 @@ def extract_pairs(project_filter: str = "", limit: int = 0, verbose: bool = Fals
                     tool_set = set(tools)
                     bash_dom = tools.count("Bash") > 2
                     edit_dom = tools.count("Edit") + tools.count("Write") > 1
-                    if "mcp__apollo__" in " ".join(tools) or any("oracle" in t for t in tools):
+                    if "mcp__apollo__" in " ".join(tools) or any("kb" in t for t in tools):
                         action_type = "QUERY_KB"
                     elif bash_dom:
                         action_type = "ANALYZE"  # refined below
@@ -1141,7 +1141,7 @@ def main():
     ap.add_argument("--stats",     action="store_true", help="Show archive stats")
     ap.add_argument("--list",      action="store_true", help="List archived sessions")
     ap.add_argument("--mine",      action="store_true", help="Extract text for NLP mining")
-    ap.add_argument("--pairs",     action="store_true", help="Extract (human→action) pairs for oracle KB")
+    ap.add_argument("--pairs",     action="store_true", help="Extract (human→action) pairs for the project KB")
     ap.add_argument("--sync",      action="store_true", help="Push local cache to Apollo (retry)")
     ap.add_argument("--no-apollo", action="store_true", help="Skip Apollo sync (offline mode)")
     ap.add_argument("--history",   action="store_true", help="Archive ~/.claude/history.jsonl prompt history")
@@ -1269,7 +1269,7 @@ def main():
         print(f"[liljack] archived {n} session(s) → {ARCHIVE_ROOT}")
     if pushed > 0:
         url = _apollo_url()
-        print(f"[liljack] synced {pushed} session(s) → apollo://{url}/{JACK_REPO}")
+        print(f"[liljack] synced {pushed} session(s) → apollo://{url}/{LILJACK_REPO}")
 
 
 if __name__ == "__main__":
