@@ -14,7 +14,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc pkg-config libsdl2-dev libfreetype6-dev libjson-c-dev ffmpeg python3 \
+          sudo apt-get install -y gcc pkg-config libsdl2-dev libfreetype6-dev libjson-c-dev ffmpeg python3 gdb \
             fonts-dejavu-core fonts-noto-mono fonts-noto-color-emoji fonts-noto-cjk fonts-noto-core
       - name: Font files present
         run: ls /usr/share/fonts/truetype/dejavu/ /usr/share/fonts/truetype/noto/ 2>/dev/null | head -20
@@ -31,5 +31,19 @@ jobs:
           # Surface the failure as annotations, readable on the run page and via the public API.
           grep -nE 'FAIL|fail|Abort|assert|rror|exit' native.log | grep -v warning | tail -n 8 | while IFS= read -r l; do echo "::error::$l"; done
           tail -n 3 native.log | while IFS= read -r l; do echo "::error::tail: $l"; done
+      - name: Diagnose strip-occlusion (on failure)
+        if: failure()
+        run: |
+          set +e
+          read -r -a cflags <<< "$(pkg-config --cflags sdl2 freetype2 json-c)"
+          read -r -a libs <<< "$(pkg-config --libs sdl2 freetype2 json-c)"
+          d=$(mktemp -d)
+          for o in c_sixel c_theme; do gcc -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I vendor/hui "${cflags[@]}" -c liljack_app/$o.c -o $d/$o.o; done
+          gcc -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I vendor/hui "${cflags[@]}" tests/test_liljack_strip_occlusion.c $d/c_sixel.o $d/c_theme.o "${libs[@]}" -lm -lutil -o $d/so-asan
+          SDL_VIDEODRIVER=dummy ASAN_OPTIONS=detect_leaks=0 $d/so-asan > $d/asan.out 2>&1; echo "asan exit=$?"
+          grep -nE 'ERROR: |runtime error|#[0-9]+ 0x|SUMMARY|frame [0-9]|strip-occlusion' $d/asan.out | head -n 25 | while IFS= read -r l; do echo "::error::asan $l"; done
+          for o in c_sixel c_theme; do gcc -std=c11 -O1 -g -I vendor/hui "${cflags[@]}" -c liljack_app/$o.c -o $d/$o.o; done
+          gcc -std=c11 -O1 -g -I vendor/hui "${cflags[@]}" tests/test_liljack_strip_occlusion.c $d/c_sixel.o $d/c_theme.o "${libs[@]}" -lm -lutil -o $d/so-gdb
+          SDL_VIDEODRIVER=dummy gdb -batch -ex run -ex bt -ex 'info locals' $d/so-gdb 2>&1 | grep -E '^#[0-9]+|SIG|frame [0-9]|^[a-z_]+ = ' | head -n 30 | while IFS= read -r l; do echo "::error::gdb $l"; done
       - name: Python proofs
         run: bash tests/run_liljack_python_tests.sh
