@@ -139,7 +139,7 @@ gcc "${flags[@]}" -I liljack_app tests/test_liljack_sixel.c "$test_dir/c_sixel.o
 gcc "${flags[@]}" -I liljack_app tests/test_liljack_vt_pixels.c "$test_dir/owkterm_vt.o" -o "$test_dir/vt-pixels"
 gcc "${flags[@]}" -I liljack_app tests/test_liljack_vt_sync.c "$test_dir/owkterm_vt.o" -o "$test_dir/vt-sync"
 gcc "${flags[@]}" -I liljack_app tests/test_liljack_vt_osc52.c "$test_dir/owkterm_vt.o" -o "$test_dir/vt-osc52"
-gcc "${flags[@]}" -I liljack_app "${cflags[@]}" tests/test_liljack_ansi_image.c "$test_dir/c_ansi.o" "$test_dir/c_sixel.o" "${libs[@]}" -lutil "$test_dir/c_theme.o" -o "$test_dir/ansi-image"
+gcc "${flags[@]}" -I liljack_app "${cflags[@]}" tests/test_liljack_ansi_image.c "$test_dir/c_ansi.o" "$test_dir/c_sixel.o" "$test_dir/c_theme.o" "${libs[@]}" -lutil -o "$test_dir/ansi-image"
 ffmpeg -nostdin -hide_banner -loglevel error -threads 2 -filter_threads 1 \
     -f lavfi -i 'color=c=red:s=64x36:r=12' -t 0.5 -an -c:v mpeg4 -threads 2 -pix_fmt yuv420p "$test_dir/red.mp4"
 "$test_dir/dock"
@@ -156,7 +156,7 @@ ffmpeg -nostdin -hide_banner -loglevel error -threads 2 -filter_threads 1 \
 "$test_dir/vt-sync"
 "$test_dir/vt-osc52"
 "$test_dir/ansi-image"
-gcc "${flags[@]}" -I liljack_app "${cflags[@]}" tests/test_liljack_overlay_trace.c "$test_dir/c_ansi.o" "$test_dir/c_sixel.o" "${libs[@]}" -lutil "$test_dir/c_theme.o" -o "$test_dir/overlay-trace"
+gcc "${flags[@]}" -I liljack_app "${cflags[@]}" tests/test_liljack_overlay_trace.c "$test_dir/c_ansi.o" "$test_dir/c_sixel.o" "$test_dir/c_theme.o" "${libs[@]}" -lutil -o "$test_dir/overlay-trace"
 "$test_dir/overlay-trace"
 "$test_dir/native"
 "$test_dir/header"
