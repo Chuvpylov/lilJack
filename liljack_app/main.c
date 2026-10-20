@@ -69,6 +69,9 @@
 #define CELLW LJ_CELL_W
 #define CELLH LJ_LINE_H
 
+/* A session gone from the snapshot and disconnected this long gives back its
+ * VT (~5.5 MB) and buffers; before, it held them until all COUNT slots filled. */
+#define LJ_GONE_FREE_MS 60000u
 typedef struct {
     char id[81],agent[32],name[128],role[20],parent[81],state[40],task[256],room_id[81];
     char unavailable[120];   /* why the heartbeat gave up on it, empty if it has not */
@@ -82,6 +85,7 @@ typedef struct {
     size_t rxlen,rxcap;
     int view_row;   /* first buffer row the tile shows; >0 when the tile is shorter than the PTY */
     lj_rect grid;
+    uint32_t gone_at;   /* SDL ticks when it left the snapshot (0 = present); see LJ_GONE_FREE_MS */
 } Session;
 typedef struct {lj_rect r;int kind,index,layer;char id[81];} Hit;
 typedef struct {
@@ -555,7 +559,8 @@ static int poll_terminal(App *a,Session *s){
     int changed=0;unsigned char data[32768];
     for(int i=0;i<8;i++){ssize_t n=read(s->fd,data,sizeof(data));
         if(n<0&&(errno==EAGAIN||errno==EINTR))break;
-        if(n<=0){s->connected=0;changed=1;break;}
+        /* EOF: reap the child now; it stayed a zombie until the tile closed. */
+        if(n<=0){s->connected=0;changed=1;if(s->pid>0&&waitpid(s->pid,NULL,WNOHANG)==s->pid)s->pid=0;break;}
         lj_vt_feed(s->vt,data,(int)n);const char *reply=lj_vt_reply(s->vt);
         if(reply&&*reply)send_bytes(a,s,reply,strlen(reply));lj_vt_clear_reply(s->vt);changed=1;
     }
@@ -764,6 +769,13 @@ static void apply_snapshot(App *a,json_object *d){
     size_t count=rows?json_object_array_length(rows):0;
     /* Reserve all identities present in this snapshot before reusing stale slots. */
     for(size_t i=0;i<count;i++){Session *s=session(a,jstr(json_object_array_get_idx(rows,i),"id"));if(s)s->seen=1;}
+    /* A session gone from the snapshot and disconnected for LJ_GONE_FREE_MS gives
+     * back its VT and buffers (its slot and id stay, so it can still come back). */
+    {uint32_t now=SDL_GetTicks();
+     for(int k=0;k<a->nsession;k++){Session *g=&a->sessions[k];
+        if(g->seen){g->gone_at=0;continue;}
+        if(!g->gone_at){g->gone_at=now|1;continue;}
+        if(!g->connected&&g->vt&&now-g->gone_at>=LJ_GONE_FREE_MS&&strcmp(g->id,a->selected)&&strcmp(g->id,a->focus))terminal_close(g);}}
     for(size_t i=0;i<count&&a->norder<COUNT;i++){
         json_object *row=json_object_array_get_idx(rows,i);const char *id=jstr(row,"id");if(!*id)continue;
         Session *s=session(a,id);

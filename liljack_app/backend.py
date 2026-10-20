@@ -121,8 +121,11 @@ class Backend:
         # questions". Mail carries a room since mailbox-session-scoping, so each
         # room shows only its own; untagged legacy rows are shown everywhere
         # rather than hidden. `unread_dms` is the tab badge count.
+        # One mailbox read per snapshot, not one per room: 32 rooms re-decoded
+        # 118k mail lines, 1.8 s on every reply (2026-10-19 open-delay fix).
+        operator_mail = self.operator_inbox()
         for room in result['rooms']:
-            room['dms'] = self.room_dms(room['id'])
+            room['dms'] = self.room_dms(room['id'], rows=operator_mail)
             room['unread_dms'] = sum(1 for d in room['dms'] if not d['read'])
         result['room_dms'] = [d for room in result['rooms'] for d in room['dms']]
         result.update(open_task_snapshot(self.store, self.project))
@@ -209,23 +212,27 @@ class Backend:
                         'rows': len(git.get('rows') or []) if isinstance(git.get('rows'), list) else None},
                 'error': (result.get('review_panel') or {}).get('error') or ''}
 
-    def room_dms(self, room, limit=None):
-        """Mail addressed to operator that belongs to `room`, oldest first.
-
-        Read state is per agent in the mailbox, so `read` means operator has seen
-        it. A row with no room is legacy (pre-scoping) and is shown in every
-        room rather than lost."""
+    def operator_inbox(self):
         try:
             import liljack_mail as mail
         except ImportError:
             return []
         try:
             # ⚠ session='operator' is the OPERATOR read: the operator is not a room member,
-            # so the mailbox must not scope his view to whatever room the calling
-            # process happens to sit in. Per-room filtering happens right below.
-            rows = mail.inbox('operator', unread_only=False, limit=200, session='operator')
+            # so the mailbox must not scope their view to whatever room the calling
+            # process happens to sit in. Per-room filtering happens in room_dms.
+            return mail.inbox('operator', unread_only=False, limit=200, session='operator')
         except (OSError, ValueError):
             return []
+
+    def room_dms(self, room, limit=None, rows=None):
+        """Mail addressed to operator that belongs to `room`, oldest first.
+
+        Read state is per agent in the mailbox, so `read` means operator has seen
+        it. A row with no room is legacy (pre-scoping) and is shown in every
+        room rather than lost. `rows` is a pre-read operator_inbox()."""
+        if rows is None:
+            rows = self.operator_inbox()
         room = (room or '').strip()
         out = []
         for row in rows:

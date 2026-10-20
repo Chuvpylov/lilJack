@@ -26,4 +26,6 @@ run_proof skill-install python3 tests/test_liljack_skill_install.py
 run_proof codex-tool-allowlist python3 tests/test_liljack_codex_tool_allowlist.py
 run_proof mcp-routing python3 tests/test_liljack_mcp.py
 run_proof canvas-cli python3 tests/test_liljack_canvas_cli.py
+run_proof worker-wake-prune python3 tests/test_liljack_worker_wake_prune.py
+run_proof registry-parse-once python3 tests/test_liljack_registry_parse_once.py
 printf 'All Python lilJack proofs passed (4/4).\n'

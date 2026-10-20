@@ -2,7 +2,7 @@
 import subprocess
 
 from liljack_workspace import session_key
-from .runtime import Tmux
+from .runtime import Tmux, stage_line
 
 
 def harness_for(agent):
@@ -28,6 +28,6 @@ def wake(native, notice, project, *, harness, target, tmux=None):
         raise RuntimeError('Exact lead terminal changed before delivery')
     if not current.get('pane'):
         raise RuntimeError('Lead has no exact pane')
-    tmux.call('send-keys', '-t', current['pane'], '-l', '--', notice)
+    stage_line(tmux, current['pane'], notice)
     # Never retry if the first write or this submit has an ambiguous outcome.
     return tmux.call('send-keys', '-t', current['pane'], 'Enter')

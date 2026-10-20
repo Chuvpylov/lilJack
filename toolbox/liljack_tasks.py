@@ -400,10 +400,47 @@ def _log_row(a) -> dict:
             "op": a.attrs.get("op", ""), "note": a.attrs.get("note", "")}
 
 
+# ⚠ PARSE AN UNCHANGED REGISTRY ONCE PER PROCESS. The live registry is 2.6 MB
+# and a parse costs ~0.3 s; room_context read it once per room for the "open
+# TODOs" digest, so `room --context` took 7.7 s and every room start paid that
+# per agent before launching anything (reported 2026-10-19: "workers open with a
+# huge delay"). Keyed on the file's identity — write_atomic replaces the inode —
+# and every caller gets its own copy, because writers mutate what read() returns.
+_READ_CACHE: dict = {}
+_READ_CACHE_MAX = 4
+
+
+def _copy_store(out: dict) -> dict:
+    return {**out,
+            "tasks": [{**t, "_extra": dict(t["_extra"])} for t in out["tasks"]],
+            "log": [dict(r) for r in out["log"]],
+            "negs": [{**n, "args": list(n["args"])} for n in out["negs"]],
+            "briefs": dict(out["briefs"]), "header": dict(out["header"])}
+
+
 def read(path=None) -> dict:
     """Parse the registry. Lenient fallback, like the board: one hand-edited bad
     line must not blind both harnesses, but it IS counted."""
     p = Path(path) if path else default_path()
+    try:
+        st = p.stat()
+        key = (st.st_ino, st.st_size, st.st_mtime_ns)
+    except OSError:
+        key = None
+    cached = _READ_CACHE.get(str(p))
+    if key is not None and cached and cached[0] == key:
+        return _copy_store(cached[1])
+    out = _parse(p)
+    if key is not None:
+        _READ_CACHE.pop(str(p), None)
+        _READ_CACHE[str(p)] = (key, out)
+        while len(_READ_CACHE) > _READ_CACHE_MAX:
+            _READ_CACHE.pop(next(iter(_READ_CACHE)))
+        return _copy_store(out)
+    return out
+
+
+def _parse(p: Path) -> dict:
     B = board.bmd()
     out = {"path": str(p), "exists": p.exists(), "tasks": [], "log": [], "negs": [],
            "briefs": {}, "errors": 0, "updated": "", "header": {}}

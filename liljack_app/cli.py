@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import uuid
 
 from liljack_mail import AGENTS, detect_agent, _scrub
@@ -370,7 +371,8 @@ def control_cli(argv):
                 raise ValueError("Target has no live terminal")
             result = {"session_id": a.session, "action": a.action, "status": "sent_to_tmux"}
             if a.action == "send":
-                tmux.call("send-keys", "-t", live["pane"], "-l", "--", text)
+                from .runtime import stage_line
+                stage_line(tmux, live["pane"], text)
             elif a.action == "submit":
                 # ⚠ SUBMIT MUST VERIFY, NOT ASSERT. "sent_to_tmux" proves only that
                 # tmux accepted the Enter — not that a turn started (the operator 2026-09-09:
@@ -381,6 +383,10 @@ def control_cli(argv):
                 harness = {"deepseek": "opencode", "codex": "codex", "claude": "claude"}.get(live["agent"])
                 before = lead_lifecycle.lookup(a.session, a.project, harness,
                                                workspace_root=a.root) if harness else None
+                from .runtime import SUBMIT_SETTLE_S
+                if not live.get("pane"):
+                    raise ValueError("Target has no exact pane")
+                time.sleep(SUBMIT_SETTLE_S.get(harness, 0))
                 tmux.call("send-keys", "-t", live["pane"], "Enter")
                 if harness:
                     outcome, detail = lead_lifecycle.verify_submit(

@@ -71,9 +71,11 @@ class RoomHeartbeatTests(unittest.TestCase):
             with patch('liljack_app.lead_transport.subprocess.run') as run:
                 wake('thread','Room notice',self.project,harness=harness,target=self.row,tmux=self.tmux)
             run.assert_not_called()
-            self.assertEqual(self.tmux.call.call_args_list[0].args,
-                             ('send-keys','-t','%4','-l','--','Room notice'))
-            self.assertEqual(self.tmux.call.call_args_list[1].args,('send-keys','-t','%4','Enter'))
+            calls=[c.args for c in self.tmux.call.call_args_list]
+            self.assertEqual([c[0] for c in calls],['set-buffer','paste-buffer','send-keys'])
+            self.assertEqual(calls[0][-1],'Room notice')
+            self.assertIn('-p',calls[1])
+            self.assertEqual(calls[2],('send-keys','-t','%4','Enter'))
 
     def test_replaced_or_dead_pane_never_receives_keys(self):
         for changed in ({'pane':'%9'},{'state':'exited'},{'agent':'shell'}):
@@ -96,7 +98,7 @@ class RoomHeartbeatTests(unittest.TestCase):
     def test_default_pump_transport_wakes_claude_and_records_acceptance(self):
         with patch('liljack_app.lead_transport.Tmux',return_value=self.tmux):
             pump(self.w,self.project,[self.row],lookup=self.lookup)
-        self.assertEqual(self.tmux.call.call_count,2)
+        self.assertEqual(self.tmux.call.call_count,3)  # set-buffer, paste-buffer, Enter
         self.assertIn(self.message['id'],self.tmux.call.call_args_list[0].args[-1])
         row=self.w.db.execute('SELECT state,native_session FROM room_delivery').fetchone()
         self.assertEqual(tuple(row),('submitted','claude-thread'))

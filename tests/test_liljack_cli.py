@@ -116,7 +116,12 @@ class CliTests(unittest.TestCase):
         with self.env(sid=self.lead), patch.object(cli, 'Tmux', return_value=tmux):
             code, result = self.invoke(['session', 'send', *self.args, '--session', self.worker, '--text', 'Привіт 日本語'])
         self.assertEqual(code, 0, result)
-        tmux.call.assert_called_once_with('send-keys', '-t', '%4', '-l', '--', 'Привіт 日本語')
+        # Staged as one bracketed paste (codex read typed keys + Enter as a newline).
+        self.assertEqual([c.args[0] for c in tmux.call.call_args_list], ['set-buffer', 'paste-buffer'])
+        self.assertEqual(tmux.call.call_args_list[0].args[-2:], ('--', 'Привіт 日本語'))
+        paste = tmux.call.call_args_list[1].args
+        self.assertIn('-p', paste)
+        self.assertEqual(paste[-2:], ('-t', '%4'))
         with self.env(sid=self.lead), patch.object(cli, 'Tmux') as factory:
             code, result = self.invoke(['session', 'send', *self.args, '--session', self.worker, '--text', 'bad\ncommand'])
             self.assertEqual(code, 2)

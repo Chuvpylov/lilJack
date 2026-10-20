@@ -312,9 +312,37 @@ def start_sync_worker():
                      stderr=subprocess.DEVNULL, start_new_session=True)
 
 
+# Only the coordination identity crosses over; never tokens or anything else.
+_IDENTITY_KEYS = ("LILJACK_WORKSPACE_SESSION", "LILJACK_WORKSPACE_PROJECT",
+                  "LILJACK_WORKSPACE_ROOT", "LILJACK_HARNESS", "LILJACK_AGENT")
+
+
+def inherit_parent_identity(env, environ_path=None):
+    """Recover the launched session's identity from the parent codex process.
+
+    Codex starts plugin MCP servers with a scrubbed environment, so the server
+    had no LILJACK_WORKSPACE_SESSION and caller() refused every room post and
+    task move from codex. The parent is the codex process lilJack launched with
+    that identity; read its environ (same uid) and copy only the identity keys.
+    """
+    if env.get("LILJACK_WORKSPACE_SESSION"):
+        return env
+    path = Path(environ_path or f"/proc/{os.getppid()}/environ")
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return env
+    for item in raw.split(b"\0"):
+        key, sep, value = item.decode("utf-8", "replace").partition("=")
+        if sep and key in _IDENTITY_KEYS and value:
+            env.setdefault(key, value)
+    return env
+
+
 def mcp_main():
     # MCP subprocesses may not inherit any CODEX_* variables. The adapter
     # already knows its coordination identity (also deepseek for OpenCode).
+    inherit_parent_identity(os.environ)
     os.environ.setdefault("LILJACK_AGENT", AGENT)
     import liljack_mcp as mcp
     history_tool = f"{HARNESS}_history"

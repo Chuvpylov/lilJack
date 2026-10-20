@@ -47,7 +47,10 @@ typedef struct {
  * CPU and MEM plots have bigger black gaps". 32 covers a full room; a frame
  * that still overflows says so once on stderr under LILJACK_TRACE_OVERLAYS. */
 #define MAX_IMAGES 32
-#define IMAGE_COPY_CAP (4u*1024u*1024u) /* per-slot source bytes; pool <=32 MiB */
+#define IMAGE_COPY_CAP (4u*1024u*1024u) /* per-slot source bytes; 32 slots -> <=128 MiB peak */
+/* A slot keeps a buffer this much larger than its image only up to this size;
+ * past it the slot shrinks, so one video frame does not pin 4 MiB per slot. */
+#define IMAGE_SLACK_BYTES (256u*1024u)
 #define SIXEL_CAP (1024*1024)
 typedef struct {
     int col,row,cols,rows;              /* placement, in CELLS */
@@ -336,6 +339,9 @@ int lj_ansi_image(int x,int y,int w,int h,const uint32_t *src,int sw,int sh){
     if(bytes>im->capacity){
         uint32_t *next=realloc(im->src,bytes);if(!next)return 0;
         im->src=next;im->capacity=bytes;
+    }else if(im->capacity>IMAGE_SLACK_BYTES&&im->capacity>bytes*4){
+        uint32_t *next=realloc(im->src,bytes);   /* a failed shrink keeps the old buffer */
+        if(next){im->src=next;im->capacity=bytes;}
     }
     memcpy(im->src,src,bytes);state.image_count++;
     im->col=col;im->row=row;im->cols=cols;im->rows=rows;

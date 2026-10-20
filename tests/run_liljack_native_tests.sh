@@ -94,6 +94,8 @@ gcc "${flags[@]}" -I "$hui_dir" "${cflags[@]}" tests/test_liljack_selection_scro
 "$test_dir/selection"
 "$test_dir/paste"
 "$test_dir/selection-scroll"
+gcc "${flags[@]}" -I "$hui_dir" "${cflags[@]}" tests/test_liljack_session_reap.c "${objects[@]}" "${libs[@]}" -lutil -lm -o "$test_dir/session-reap"
+"$test_dir/session-reap"
 "$test_dir/label-form"
 "$test_dir/drag"
 "$test_dir/popups"
@@ -181,6 +183,15 @@ fi
 "$test_dir/media" "$test_dir/red.mp4" "$test_dir/image.png"
 "$test_dir/popup" "$test_dir/red.mp4"
 bash tests/run_liljack_python_tests.sh
+gcc "${flags[@]}" -D_GNU_SOURCE -I liljack_app -I "$hui_dir" tests/test_liljack_ansi_slot_shrink.c liljack_app/c_sixel.c liljack_app/c_theme.c "${cflags[@]}" "${libs[@]}" -lutil -lm -o "$test_dir/ansi-slot-shrink"
+# owkTerm tile pool: an in-flight image's scratch tiles survive GC (graph migration).
+owkterm_dir="$repo_dir/../owkTerm"
+if [[ -f "$owkterm_dir/tests/tiles.c" ]]; then
+    gcc "${flags[@]}" -D_DEFAULT_SOURCE -I "$repo_dir/liljack_app" -I "$hui_dir" "$owkterm_dir/tests/tiles.c" \
+        liljack_app/owkterm_vt.c liljack_app/c_render.c liljack_app/c_media.c \
+        $(pkg-config --cflags --libs sdl2 freetype2) -lutil -lm -o "$test_dir/owkterm-tiles"
+    "$test_dir/owkterm-tiles"
+fi
 printf 'All native lilJack tests passed.\n'
 # owkTerm app suite (standard apps headless + goldens), opt-in: OWKTERM_APPS=1
 if [[ ${OWKTERM_APPS:-0} == 1 && -f "$(dirname "$0")/../../owkTerm/tests/apps.py" ]]; then

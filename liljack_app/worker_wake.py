@@ -98,10 +98,31 @@ def _state() -> dict:
         return {}
 
 
+# Nudge memos older than this are forgotten. The file is re-read and re-written
+# on every call and only ever grew (1376 keys, 2026-10-15); a week is far past
+# the longest backoff (2 h), so no cooldown or strike count is lost.
+STATE_TTL_S = 7 * 24 * 60 * 60
+
+
+def _prune(s: dict) -> dict:
+    """Drop `sid:task` memos last attempted STATE_TTL_S before the newest one,
+    with their :n/:reason. Measured against the newest memo, not the wall clock,
+    so callers that pass their own `now` (and the suites' synthetic clocks) agree."""
+    memos = {k: v for k, v in s.items() if k.startswith("s-") and not k.endswith(":n")
+             and isinstance(v, (int, float)) and not isinstance(v, bool)}
+    if not memos:
+        return s
+    cutoff = max(memos.values()) - STATE_TTL_S
+    for key in [k for k, v in memos.items() if v < cutoff]:
+        for k in (key, key + ":n", key + ":reason"):
+            s.pop(k, None)
+    return s
+
+
 def _write_state(s: dict) -> None:
     try:
         STATE.parent.mkdir(parents=True, exist_ok=True)
-        STATE.write_text(json.dumps(s))
+        STATE.write_text(json.dumps(_prune(s)))
     except OSError:
         pass                      # a lost memo means one duplicate, not a crash
 

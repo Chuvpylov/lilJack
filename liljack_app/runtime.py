@@ -74,6 +74,29 @@ def sixel_terminfo_dir():
     return str(base) if (base / "x" / _SIXEL_TERM).exists() else None
 
 
+def stage_line(tmux, pane, text):
+    """Stage one line in an agent's composer as a paste, not as typed keys.
+
+    `send-keys -l` types the line as a keystroke burst, and codex folds an Enter
+    that lands inside its paste-burst window into the composer as a newline, so
+    room notices sat unsubmitted until a human pressed a key. paste-buffer -p
+    wraps the text in bracketed-paste markers when the app enabled them (mode
+    2004), so the composer sees one paste and a later Enter submits it.
+    """
+    if not pane:
+        raise RuntimeError("Target has no exact pane")
+    # Sanitised here too, so no caller can close the paste early with ESC[201~.
+    text = "".join(c for c in text if ord(c) >= 32 and not 127 <= ord(c) < 160)
+    buf = f"lj-stage-{os.getpid()}"
+    tmux.call("set-buffer", "-b", buf, "--", text)
+    return tmux.call("paste-buffer", "-p", "-d", "-b", buf, "-t", pane)
+
+
+# A pasted line needs a moment to settle before Enter or codex can still read the
+# Enter as part of the paste; other harnesses submit reliably without it.
+SUBMIT_SETTLE_S = {"codex": 0.3}
+
+
 class Tmux:
     def __init__(self, socket_name=None):
         self.binary = tmux_binary()

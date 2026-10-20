@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Build one native C executable, cached by source/compiler/dependency content.
 set -euo pipefail
+# The digest below hashes globs: collation decides their order, so pin it or a
+# desktop launch and an agent shell see different ids and rebuild each other's.
+export LC_ALL=C
 app_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$app_dir/.." && pwd)
 hui_dir=${LILJACK_HUI:-"$repo_dir/vendor/hui"}
@@ -33,7 +36,9 @@ elif [[ $# != 0 ]]; then
 fi
 exec 9>"$build_dir/c-build.lock"
 flock 9
-digest=$({ sha256sum "$app_dir"/*.[ch] "$app_dir/build.sh" "$hui_dir"/*.h "$hui_dir"/backends/*.h "$hui_dir"/deps/stb_image*.h; gcc -dumpversion; pkg-config --modversion sdl2 freetype2 json-c; } | sha256sum | cut -c1-20)
+# Content only (cut drops the path column), so LILJACK_HUI spellings agree too.
+digest=$({ sha256sum "$app_dir"/*.[ch] "$app_dir/build.sh" "$hui_dir"/*.h "$hui_dir"/backends/*.h "$hui_dir"/deps/stb_image*.h | cut -d' ' -f1; gcc -dumpversion; pkg-config --modversion sdl2 freetype2 json-c; } | sha256sum | cut -c1-20)
+[[ -n ${LILJACK_BUILD_DIGEST_ONLY:-} ]] && { printf '%s\n' "$digest"; exit 0; }
 target="$build_dir/liljack-c-$digest"
 if [[ ! -x "$target" ]]; then
     tmp="$target.$$.tmp"
@@ -51,5 +56,7 @@ if [[ ! -x "$target" ]]; then
         "${libs[@]}" -lutil -lm -ldl -o "$tmp"
     chmod 700 "$tmp"
     mv -- "$tmp" "$target"
+    # Keep the newest few builds (a running app may still use one); 500+ piled up.
+    ls -1t -- "$build_dir"/liljack-c-* 2>/dev/null | grep -v '\.tmp$' | tail -n +5 | xargs -r rm -f --
 fi
 printf '%s\n' "$target"
