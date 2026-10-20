@@ -19,6 +19,8 @@ typedef struct { unsigned int gpu; unsigned int memory; } nvml_util_t;
 typedef struct { unsigned long long total; unsigned long long free; unsigned long long used; } nvml_mem_t;
 typedef void *nvml_dev_t;
 typedef int (*fn_nvml_init)(void);
+typedef int (*fn_nvml_count)(unsigned int *);
+typedef int (*fn_nvml_string)(nvml_dev_t, char *, unsigned int);
 typedef int (*fn_nvml_handle)(unsigned int, nvml_dev_t *);
 typedef int (*fn_nvml_util)(nvml_dev_t, nvml_util_t *);
 typedef int (*fn_nvml_mem)(nvml_dev_t, nvml_mem_t *);
@@ -46,7 +48,8 @@ static struct {
 #define PART_CPU 0
 #define PART_MEM (LJ_METRIC_CORES_MAX)
 #define PART_GPU (LJ_METRIC_CORES_MAX+3)
-#define PART_COUNT (LJ_METRIC_CORES_MAX+3+2)
+#define PART_DEVICES (PART_GPU+2)
+#define PART_COUNT (PART_DEVICES+2*LJ_METRIC_GPUS_MAX)
     float part_hist[PART_COUNT][LJ_METRIC_HISTORY];
     hui_sparkline_bucket part_bucket[PART_COUNT];
     float part_display[PART_COUNT][LJ_METRIC_HISTORY];
@@ -77,12 +80,19 @@ static struct {
     /* NVML */
     void *lib;
     fn_nvml_init nvml_init;
+    fn_nvml_count nvml_count;
+    fn_nvml_init nvml_shutdown;
+    fn_nvml_string nvml_name, nvml_uuid;
+    int nvml_started;
     fn_nvml_handle nvml_handle;
     fn_nvml_util nvml_util;
     fn_nvml_mem nvml_mem;
     fn_nvml_temp nvml_temp;
     int gpu_avail;
-    nvml_dev_t dev;
+    int gpu_count;
+    nvml_dev_t devices[LJ_METRIC_GPUS_MAX];
+    lj_gpu_sample gpus[LJ_METRIC_GPUS_MAX];
+    float gpu_linear[LJ_METRIC_GPUS_MAX][2][LJ_METRIC_HISTORY];
     unsigned int gpu_temp_c;
     int gpu_has_temp;
 
@@ -196,9 +206,11 @@ static int find_u64(const char *buf, const char *key, unsigned long long *out) {
 
 /* ── NVML ────────────────────────────────────────────────────────────────── */
 static void nvml_close(void) {
+    if (G.nvml_started && G.nvml_shutdown) G.nvml_shutdown();
+    G.nvml_started = 0;
     if (G.lib) { dlclose(G.lib); G.lib = NULL; }
     G.gpu_avail = 0;
-    G.dev = NULL;
+    G.gpu_count = 0;
     G.gpu_has_temp = 0;
 }
 
@@ -208,31 +220,69 @@ static void nvml_open(void) {
     nvml_close();
     G.lib = dlopen(path, RTLD_LAZY | RTLD_LOCAL);
     if (!G.lib) return;                          /* absent -> unavailable, never 0.0 */
+    G.nvml_count = (fn_nvml_count)dlsym(G.lib, "nvmlDeviceGetCount_v2");
+    G.nvml_shutdown = (fn_nvml_init)dlsym(G.lib, "nvmlShutdown");
+    G.nvml_name = (fn_nvml_string)dlsym(G.lib, "nvmlDeviceGetName");
+    G.nvml_uuid = (fn_nvml_string)dlsym(G.lib, "nvmlDeviceGetUUID");
     G.nvml_init   = (fn_nvml_init)  dlsym(G.lib, "nvmlInit_v2");
     G.nvml_handle = (fn_nvml_handle)dlsym(G.lib, "nvmlDeviceGetHandleByIndex_v2");
     G.nvml_util   = (fn_nvml_util)  dlsym(G.lib, "nvmlDeviceGetUtilizationRates");
     G.nvml_mem    = (fn_nvml_mem)   dlsym(G.lib, "nvmlDeviceGetMemoryInfo");
     G.nvml_temp   = (fn_nvml_temp)  dlsym(G.lib, "nvmlDeviceGetTemperature");
-    if (!G.nvml_init || !G.nvml_handle || !G.nvml_util || !G.nvml_mem) {
+    if (!G.nvml_count || !G.nvml_uuid || !G.nvml_shutdown || !G.nvml_init || !G.nvml_handle || !G.nvml_util || !G.nvml_mem) {
         nvml_close();
         return;
     }
     if (G.nvml_init() != 0) { nvml_close(); return; }
+    G.nvml_started = 1;
+    unsigned int count = 0;
+    if (G.nvml_count(&count) != 0) { nvml_close(); return; }
+    for (unsigned int i = 0; i < count && G.gpu_count < LJ_METRIC_GPUS_MAX; i++) {
+        nvml_dev_t dev = NULL;
+        lj_gpu_sample sample = {0};
+        if (G.nvml_handle(i, &dev) != 0 || !dev) continue;
+        if (G.nvml_uuid(dev, sample.uuid, sizeof sample.uuid) != 0 || !sample.uuid[0]) continue;
+        sample.uuid[sizeof sample.uuid-1] = '\0';
+        int duplicate = 0;
+        for (int j = 0; j < G.gpu_count; j++)
+            if (!strcmp(G.gpus[j].uuid, sample.uuid)) duplicate = 1;
+        if (duplicate) continue;
+        if (!G.nvml_name || G.nvml_name(dev, sample.name, sizeof sample.name) != 0)
+            snprintf(sample.name, sizeof sample.name, "NVIDIA GPU");
+        sample.name[sizeof sample.name-1] = '\0';
+        sample.index = i;
+        sample.utilization = sample.memory_fraction = NAN;
+        G.devices[G.gpu_count] = dev;
+        G.gpus[G.gpu_count++] = sample;
+    }
     G.gpu_avail = 1;
 }
 
 static void nvml_sample(float *gpu, float *gpu_mem) {
     *gpu = *gpu_mem = (float)NAN;
     if (!G.gpu_avail) return;
-    if (G.nvml_handle(0, &G.dev) != 0) { nvml_close(); return; }
-    nvml_util_t u;
-    nvml_mem_t m;
-    if (G.nvml_util(G.dev, &u) == 0) *gpu = (float)u.gpu / 100.0f;
-    if (G.nvml_mem(G.dev, &m) == 0 && m.total > 0)
-        *gpu_mem = (float)m.used / (float)m.total;
-    if (G.nvml_temp) {
-        unsigned int t = 0;
-        if (G.nvml_temp(G.dev, 0, &t) == 0) { G.gpu_temp_c = t; G.gpu_has_temp = 1; }
+    G.gpu_has_temp = 0;
+    for (int i = 0; i < G.gpu_count; i++) {
+        lj_gpu_sample *s = &G.gpus[i];
+        nvml_dev_t dev = G.devices[i];
+        nvml_util_t u;
+        nvml_mem_t m;
+        s->utilization = s->memory_fraction = NAN;
+        s->memory_used = s->memory_total = 0;
+        if (G.nvml_util(dev, &u) == 0 && u.gpu <= 100)
+            s->utilization = (float)u.gpu / 100.0f;
+        if (G.nvml_mem(dev, &m) == 0 && m.total > 0 && m.used <= m.total) {
+            s->memory_fraction = (float)m.used / (float)m.total;
+            s->memory_used = m.used; s->memory_total = m.total;
+        }
+        if (i == 0 && G.nvml_temp) {
+            unsigned int t = 0;
+            if (G.nvml_temp(dev, 0, &t) == 0) { G.gpu_temp_c = t; G.gpu_has_temp = 1; }
+        }
+    }
+    if (G.gpu_count) {
+        *gpu = G.gpus[0].utilization;
+        *gpu_mem = G.gpus[0].memory_fraction;
     }
 }
 
@@ -282,6 +332,7 @@ int lj_metrics_init(void) {
         if (G.fd_meminfo >= 0) { close(G.fd_meminfo); G.fd_meminfo = -1; }
         return -1;                               /* /proc unreadable — the only fatal error */
     }
+    G.cur.cpu = G.cur.mem = G.cur.gpu = G.cur.gpu_mem = NAN;
     nvml_open();                                 /* best effort; unavailable is not an error */
     G.repaint_ms = LJ_METRICS_DISPLAY_REPAINT_MS;
     const char *rms = getenv("LJ_METRICS_DISPLAY_REPAINT_MS");
@@ -470,6 +521,10 @@ void lj_metrics_poll(void) {
     }
 
     nvml_sample(&s.gpu, &s.gpu_mem);
+    for (int i = 0; i < G.gpu_count; i++) {
+        parts[PART_DEVICES+2*i] = G.gpus[i].utilization;
+        parts[PART_DEVICES+2*i+1] = G.gpus[i].memory_fraction;
+    }
     parts[PART_GPU + 0] = s.gpu;         /* NaN when NVML is unavailable: the stack draws nothing */
     parts[PART_GPU + 1] = s.gpu_mem;
 
@@ -522,6 +577,35 @@ int lj_metrics_history_smoothed(int which, const float **out) {
     }
     *out = G.smooth[which];
     return n;
+}
+
+int lj_metrics_gpu_count(void) { return G.gpu_count; }
+const lj_gpu_sample *lj_metrics_gpu(int slot) {
+    return slot >= 0 && slot < G.gpu_count ? &G.gpus[slot] : NULL;
+}
+int lj_metrics_gpu_history(int slot, int memory, const float **out) {
+    if (!out || !lj_metrics_gpu(slot) || memory < 0 || memory > 1) return 0;
+    int start = (G.head-G.count+LJ_METRIC_HISTORY) % LJ_METRIC_HISTORY;
+    for (int i = 0; i < G.count; i++)
+        G.gpu_linear[slot][memory][i] = G.part_hist[PART_DEVICES+2*slot+memory][(start+i)%LJ_METRIC_HISTORY];
+    *out = G.gpu_linear[slot][memory]; return G.count;
+}
+int lj_metrics_gpu_display_history(int slot, int memory, const float **out) {
+    if (!out || !lj_metrics_gpu(slot) || memory < 0 || memory > 1) return 0;
+    *out = G.part_display[PART_DEVICES+2*slot+memory]; return G.display_count;
+}
+const char *lj_metrics_gpu_label(int slot, int memory) {
+    static char labels[LJ_METRIC_GPUS_MAX][2][320];
+    const lj_gpu_sample *s = lj_metrics_gpu(slot);
+    if (!s || memory < 0 || memory > 1) return "";
+    char value[64];
+    float v = memory ? s->memory_fraction : s->utilization;
+    if (!isfinite(v)) snprintf(value, sizeof value, "unavailable");
+    else if (memory) snprintf(value, sizeof value, "%.2f/%.2f GiB", s->memory_used/1073741824.0, s->memory_total/1073741824.0);
+    else snprintf(value, sizeof value, "%.0f%%", v*100);
+    snprintf(labels[slot][memory], sizeof labels[slot][memory], "%s %s %s [%s]",
+             s->name, memory ? "VRAM" : "GPU", value, s->uuid);
+    return labels[slot][memory];
 }
 
 int lj_metrics_smooth_window(void) {
