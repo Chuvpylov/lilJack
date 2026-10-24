@@ -38,12 +38,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import sqlite3
 import time
 from pathlib import Path
 
 COOLDOWN_S = 15 * 60
+# `session send` refuses text over 8000 chars; leave room for the separator.
+DIGEST_MAX_CHARS = 7600
 # A task nobody has touched for this long is not "in progress", it is STUCK, and
 # poking its owner again has already failed once. the operator's rule: corresponding
 # tasks go to their owner; STALE tasks escalate to the room's lead.
@@ -325,11 +328,18 @@ def room_allows(root, session_id: str, task_room: str) -> bool:
     return not sess.get(session_id)
 
 
+_AGE = re.compile(r"^blocked \d+h")
+
+
 def digest_signature(escalations) -> str:
     """Stable id of WHAT is being escalated. A NEW item (a worker just blocked a
     task, a room just gated one) bypasses the digest cooldown: the operator's rule —
     the lead is bugged for new actions, never for nothing."""
-    items = sorted((str(e.get("owner")), str(e.get("task")), str(e.get("reason"))[:80])
+    # ⚠ AGE IS NOT NEWS. Blocked reasons carry "blocked 7h"; signed raw, ~60 rows
+    # of different ages re-signed the digest every few minutes and the cooldown
+    # never held (2026-10-21, 101 sends in 6 h).
+    items = sorted((str(e.get("owner")), str(e.get("task")),
+                    _AGE.sub("blocked", str(e.get("reason")))[:80])
                    for e in (escalations or []))
     return hashlib.sha256(json.dumps(items).encode()).hexdigest()[:16]
 
@@ -371,7 +381,23 @@ def _digest_text(escalations) -> str:
         else:
             line = f"- {owner} is unavailable — {reason}"
         lines.append(line)
-    lines.append("Drive it, reassign it, or report in the room.")
+    tail = "Drive it, reassign it, or report in the room."
+    # ⚠ ONE SEND. `session send` refuses over 8000 chars, and the Zirec digest
+    # reached 20293 (91 items), so no digest reached the lead from 318b312 on.
+    # Over budget: short reasons first, then as many items as fit plus a count.
+    if len(" · ".join(lines + [tail])) > DIGEST_MAX_CHARS:
+        lines = [ln if len(ln) <= 110 else ln[:107] + "..." for ln in lines]
+    if len(" · ".join(lines + [tail])) > DIGEST_MAX_CHARS:
+        kept, size, total = [lines[0]], len(lines[0]), len(lines) - 1
+        for ln in lines[1:]:
+            if size + len(ln) + 3 > DIGEST_MAX_CHARS - 160:
+                break
+            kept.append(ln)
+            size += len(ln) + 3
+        rest = total - (len(kept) - 1)
+        kept.append(f"+{rest} more (task_list in the room shows them all)")
+        lines = kept
+    lines.append(tail)
     # ⚠ ONE LINE. The CLI's `send` stage rejects control characters ("Send stages
     # one line"), so a multi-line digest was refused for EVERY escalation and no
     # lead nudge went out from 20:31 EDT on 2026-09-12 — the heartbeat "stopped
@@ -477,13 +503,25 @@ def pick(project, lookup, open_items, root=None, now=None, stale=None, fresh=Non
     # nudged to their owner (nobody can act on a blocked task).
     for b in (blocked or []):
         escalations.append({"owner": b["owner"], "task": b["task"],
-                            "reason": b["reason"]})
+                            "reason": b["reason"], **({"orphan": True} if b.get("orphan") else {})})
 
     # ⚠ ROUTE EACH ESCALATION TO ITS ROOM'S LEAD. A room-stamped task belongs to
     # the room lead named in the room store; the team-table lead is only the
     # fallback for standalone tasks or rooms whose lead is not live. A digest
     # with a NEW item is sent at once (signature changed); an unchanged digest
     # waits COOLDOWN_S so the lead is not hammered for nothing.
+    # ⚠ NO LIVE LEAD IS NOT A REASON TO DROP THE ITEM. This loop used to
+    # `continue` past an escalation with nowhere to go, so a room whose lead had
+    # stopped lost every orphaned, blocked and stale row from view. Those items
+    # now go to the operator (deduped by OPERATOR_WINDOW_S) once no digest is due.
+    # ⚠ ONE LINE PER TASK. A blocked row is also gated (its gate says so), so it
+    # was listed twice; the later, blocked entry carries the age and wins.
+    dedup = {}
+    for e in escalations:
+        dedup[e.get("task") or ("", e.get("owner"), e.get("reason"))] = e
+    escalations = list(dedup.values())
+
+    unrouted = []
     if escalations:
         groups = {}            # lead session id -> [escalations]
         for e in escalations:
@@ -493,9 +531,12 @@ def pick(project, lookup, open_items, root=None, now=None, stale=None, fresh=Non
                 sid = room_lead(project, root, room)
                 if sid and sid in by_id:
                     target = by_id[sid]
-            if target is None:
+            # An orphan belongs to ITS room: another room's lead cannot rebind it
+            # (rebind needs the row's own room lead), so it goes to the operator instead.
+            if target is None and not (e.get("orphan") and room):
                 target = lead
             if target is None:
+                unrouted.append({**e, "room": room or ""})
                 continue
             groups.setdefault(target["id"], (target, []))[1].append({**e, "room": room or ""})
         for sid, (target, items) in groups.items():
@@ -509,6 +550,13 @@ def pick(project, lookup, open_items, root=None, now=None, stale=None, fresh=Non
             if changed or now - seen.get(key, 0) >= COOLDOWN_S:
                 return {"session": sid, "agent": target["agent"], "role": "lead",
                         "kind": "escalate", "escalations": items, "signature": sig}
+    if unrouted and now - seen.get("operator:undriven:last", 0) >= OPERATOR_WINDOW_S:
+        rooms = sorted({e["room"] for e in unrouted if e.get("room")})
+        return {"session": None, "agent": "operator", "role": "operator", "kind": "operator",
+                "escalations": unrouted,
+                "headline": (f"lilJack heartbeat: {len(unrouted)} open item(s) have no live room "
+                             f"lead to drive them" + (f" (rooms {', '.join(rooms)})" if rooms else "")
+                             + ". Start a lead or reassign the work.")}
 
     # ordinary owner nudges, lead included for its own work
     for w in people:
@@ -646,21 +694,26 @@ def _default_send_mail(text: str, to: str, subject: str = "", root=None) -> bool
         return False
 
 
-def _escalate_operator(lead_agent, escalations, send_mail, root=None, now=None) -> bool:
-    """Mail the operator that the room lead is unresponsive. Deduped by a long window."""
+def _escalate_operator(lead_agent, escalations, send_mail, root=None, now=None, headline=None) -> bool:
+    """Mail the operator that the room lead is unresponsive — or, with `headline`, that
+    no live lead exists to take the work at all. Each kind is deduped by a long
+    window of its own, so one never silences the other."""
     s = _state()
     now = now or time.time()
-    if now - s.get("operator:last", 0) < OPERATOR_WINDOW_S:
+    key = "operator:undriven:last" if headline else "operator:last"
+    if now - s.get(key, 0) < OPERATOR_WINDOW_S:
         return False
-    s["operator:last"] = now
+    s[key] = now
     _write_state(s)
-    lines = [f"lilJack heartbeat: the room lead ({lead_agent}) has not responded "
-             f"to {STRIKES_ESCALATE} nudges."]
+    lines = [headline or f"lilJack heartbeat: the room lead ({lead_agent}) has not responded "
+                         f"to {STRIKES_ESCALATE} nudges."]
     for e in escalations:
-        lines.append(f"- {e.get('owner') or '?'}: {e.get('task') or 'unavailable'} — {e.get('reason') or ''}")
+        where = f" [room {e['room']}]" if e.get("room") else ""
+        lines.append(f"- {e.get('owner') or '?'}: {e.get('task') or 'unavailable'}{where} — {e.get('reason') or ''}")
     fn = send_mail or _default_send_mail
+    subject = "HEARTBEAT: no live room lead" if headline else "HEARTBEAT: room lead unresponsive"
     try:
-        fn("\n".join(lines), "operator", subject="HEARTBEAT: room lead unresponsive", root=root)
+        fn("\n".join(lines), "operator", subject=subject, root=root)
         return True
     except Exception:
         return False
@@ -773,6 +826,161 @@ def blocked_post_tick(project, root, live, lookup, *, dry_run=True):
     return None
 
 
+_FAMILY = re.compile(r"^([a-z]+-[a-z]+)\d")
+
+
+def _streams(rows) -> dict:
+    """Row id -> stream key. A stream is the rows connected by `blocked_on`, by
+    one naming another's id in its note/brief/title, or by a shared id family
+    (`zirec-n3-…` and `zirec-n8-…` are both `zirec-n`). The live registry records
+    dependencies in prose (0 of 61 blocked Zirec rows set blocked_on), so the
+    id references carry most of the signal."""
+    ids = [t["id"] for t in rows]
+    parent = {i: i for i in ids}
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def join(a, b):
+        if a in parent and b in parent:
+            parent[find(a)] = find(b)
+    family = {}
+    for t in rows:
+        m = _FAMILY.match(t["id"])
+        if m:
+            join(t["id"], family.setdefault(m.group(1), t["id"]))
+        join(t["id"], (t.get("blocked_on") or "").strip())
+        text = " ".join(str(t.get(k) or "") for k in ("note", "brief", "title"))
+        for other in ids:
+            if other != t["id"] and other in text:
+                join(t["id"], other)
+    return {i: find(i) for i in ids}
+
+
+def drive_orphans(project, root=None, live=None, dry_run=False, path=None) -> dict:
+    """Give every open room row a live owner, or name it for the lead.
+
+    ⚠ A ROW BOUND TO A DEAD SESSION WAS DRIVEN BY NOBODY. Room r-304d412f
+    (2026-10-20): 67 rows bound to two stopped sessions. pick() never nudges a
+    second session about an `active` row, the live worker that was nudged about
+    an `assigned` one was refused on start, and an agent with no session in the
+    room was never mentioned at all. Per open, non-held room row:
+      · bound to a session that is live in tmux, or that the workspace still
+        records as running (a tmux blip): left alone;
+      · bound to a stopped/vanished session: rebound (op `rebind`, by the
+        heartbeat) to a live session of the same agent in the row's room —
+        same-stream holder, then the room lead, then idle, then busy workers;
+      · no live session of the owner agent in the room: an escalation item for
+        the lead's digest (and the operator's, when the lead is gone too).
+    Blocked rows whose dependency is done are released first (reconcile_blocked
+    used to run only on the arm path, never in the rooms loop).
+
+    Returns {"released": [id], "rebound": [(id, old, new)], "orphans": [item]}."""
+    import liljack_tasks as _reg
+    out = {"released": [], "rebound": [], "orphans": []}
+    if not dry_run:
+        out["released"] = _reg.reconcile_blocked(path=path)
+    db = _workspace(root)
+    if not db.exists():
+        return out
+    try:
+        con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)
+        sessions = {}
+        for sid, blob in con.execute("SELECT id, data FROM sessions"):
+            try:
+                sessions[sid] = json.loads(blob) or {}
+            except Exception:
+                sessions[sid] = {}
+        room_of = dict(con.execute("SELECT session_id, room_id FROM room_members").fetchall())
+        role = dict(con.execute("SELECT session_id, role FROM team").fetchall())
+        # ⚠ A PARKED ROOM IS THE OPERATOR'S DECISION. Rows in archived/backlog/resolved
+        # rooms are not driven (measured: 54 such rows, all in parked rooms).
+        try:
+            parked = {rid for rid, st in con.execute("SELECT id, state FROM rooms")
+                      if st and st != "active"}
+        except sqlite3.Error:
+            parked = set()              # no state column: every room counts as active
+        con.close()
+    except sqlite3.Error:
+        return out                      # cannot tell -> move nothing
+    live = set(live or ())
+
+    def alive(sid):
+        d = sessions.get(sid)
+        return sid in live and d is not None and d.get("state") != "stopped"
+
+    every = _reg.tasks(open_only=True, path=path)
+    stream = _streams(every)
+    rows = [t for t in every
+            if t.get("state") != "held" and (t.get("room") or "").strip()
+            and (t.get("owner") or "").strip().lower() not in ("", *_reg.OVERRIDE)
+            and t["room"].strip() not in parked]   # the operator's own rows have no session to drive
+    load, busy = {}, set()
+    holder = {}                         # row id -> session it is bound to (updated by this pass)
+    for t in every:
+        s = (t.get("owner_session") or "").strip()
+        holder[t["id"]] = s
+        if t in rows:
+            load[s] = load.get(s, 0) + 1
+        if t.get("state") == "active" and s:
+            busy.add(s)
+    moves = []
+    for t in rows:
+        owner, room = t["owner"].strip().lower(), t["room"].strip()
+        bound = (t.get("owner_session") or "").strip()
+        if bound:
+            if bound in live:
+                continue
+            st = (sessions.get(bound) or {}).get("state") if bound in sessions else "missing"
+            if st not in _reg.DEAD_STATES:
+                continue                # recorded as running: a blip, not a death
+        pool = [sid for sid, d in sessions.items()
+                if d.get("agent") == owner and room_of.get(sid) == room and alive(sid)]
+        if not bound and pool:
+            continue                    # unbound: the agent slot already drives it
+        if not pool:
+            why = f"no live {owner} session in room {room}"
+            if bound:
+                why += f" (bound {bound} is stopped)"
+            out["orphans"].append({"owner": owner, "task": t["id"], "reason": why, "orphan": True})
+            continue
+        # ⚠ FOLLOW THE STREAM, NOT THE SHORTEST QUEUE. Lead m-02ac7d2e (seq 6306):
+        # "least loaded worker first" sent 20 Zirec rows to a worker the operator had
+        # moved to lilJack. Order: a session already holding a row of the same
+        # stream, then the room lead (who redistributes), then an idle worker,
+        # then a worker active on other work; ties by load.
+        mates = {holder[i] for i, k in stream.items() if k == stream[t["id"]] and i != t["id"]}
+
+        def rank(sid):
+            if sid in mates:
+                return 0
+            if role.get(sid) == "lead":
+                return 1
+            return 3 if sid in busy else 2
+        pool.sort(key=lambda sid: (rank(sid), load.get(sid, 0), sid))
+        new = pool[0]
+        load[new] = load.get(new, 0) + 1
+        holder[t["id"]] = new
+        moves.append((t["id"], new, f"{bound} is stopped; live {owner} {role.get(new) or 'worker'} in room"))
+    if moves and not dry_run:
+        res = _reg.rebind_many(moves, by=_reg.SYSTEM, path=path, workspace_root=root)
+        done = {r["id"] for r in res["rebound"]}
+        for tid, new, _ in moves:
+            if tid in done:
+                old = next((t.get("owner_session") for t in rows if t["id"] == tid), "")
+                out["rebound"].append((tid, old, new))
+            else:
+                out["orphans"].append({"owner": next(t["owner"] for t in rows if t["id"] == tid),
+                                       "task": tid, "orphan": True,
+                                       "reason": f"rebind refused: {res['errors'].get(tid, ('', '?'))[1]}"})
+    elif moves:
+        out["rebound"] = [(tid, "", new) for tid, new, _ in moves]
+    return out
+
+
 def tick(project, root=None, dry_run=True, send_mail=None, tmux=None) -> dict:
     """One worker-wake pass: at most ONE nudge, and none at all when unsure."""
     import collections
@@ -782,6 +990,24 @@ def tick(project, root=None, dry_run=True, send_mail=None, tmux=None) -> dict:
         import review_panel
     except Exception as exc:
         return {"action": "worker-skip", "detail": type(exc).__name__}
+
+    # ⚠ TMUX IS THE TRUTH. Discovery failure is "cannot tell", so the loop WAITS
+    # rather than firing at a terminal it cannot confirm: `live` stays None and
+    # we return before pick(), which would otherwise fall back to the DB row.
+    live = None
+    try:
+        from liljack_app.runtime import Tmux
+        t = tmux or Tmux()
+        live = {r["id"] for r in t.sessions(project) if r.get("state") != "exited"}
+    except Exception:
+        return {"action": "worker-skip", "detail": "tmux liveness unknown"}
+    # ⚠ DRIVE ORPHANS BEFORE READING THE QUEUE. A rebind changes which session
+    # owns a row, and the owner_sessions map below must see the new one, or the
+    # rebound `active` row is still skipped as "another session's" this tick.
+    try:
+        driven = drive_orphans(project, root=root, live=live, dry_run=dry_run)
+    except Exception as exc:
+        driven = {"released": [], "rebound": [], "orphans": [], "error": type(exc).__name__}
 
     scope = review_panel.room_scope()
     opens = collections.defaultdict(list)
@@ -994,21 +1220,18 @@ def tick(project, root=None, dry_run=True, send_mail=None, tmux=None) -> dict:
                 continue
             owner = (t.get("owner") or "").strip().lower()
             note = (t.get("note") or "").strip()
+            # ⚠ SAY HOW LONG. "blocked" alone read the same at 5 minutes and at
+            # 14 hours, so a row nobody re-drove looked like fresh news forever.
+            age = _tasks._age_s(t)
+            since = f" {int(age // 3600)}h" if age is not None and age >= 3600 else ""
+            stale_tag = " — never re-driven, decide it" if (
+                age is not None and age >= _tasks.BLOCKED_REDRIVE_S) else ""
             blocked.append({"owner": owner, "task": t["id"],
-                            "reason": "blocked" + (f": {note[:120]}" if note else "")})
+                            "reason": f"blocked{since}{stale_tag}" + (f": {note[:120]}" if note else "")})
     except Exception:
         pass                      # registry unreadable -> surface nothing extra
-
-    # ⚠ TMUX IS THE TRUTH. Discovery failure is "cannot tell", so the loop WAITS
-    # rather than firing at a terminal it cannot confirm: `live` stays None and
-    # we return before pick(), which would otherwise fall back to the DB row.
-    live = None
-    try:
-        from liljack_app.runtime import Tmux
-        t = tmux or Tmux()
-        live = {r["id"] for r in t.sessions(project) if r.get("state") != "exited"}
-    except Exception:
-        return {"action": "worker-skip", "detail": "tmux liveness unknown"}
+    # Rows with no live owner in their room reach the lead the same way.
+    blocked.extend(driven.get("orphans") or [])
 
     # Mark dead terminals unavailable WITH the reason — escalate at once, never
     # retry. (A DB row that claims running but is absent from tmux is the exact
@@ -1048,9 +1271,21 @@ def tick(project, root=None, dry_run=True, send_mail=None, tmux=None) -> dict:
                   stale=stale, fresh=fresh, live=live, gated=gated, blocked=blocked,
                   owner_sessions=owner_sessions, task_rooms=task_rooms,
                   task_states=task_states)
+    drove = {k: driven[k] for k in ("released", "rebound") if driven.get(k)}
     if not choice:
+        if drove:
+            return {"action": "worker-drove", **drove,
+                    "detail": f"rebound {len(drove.get('rebound', []))}, released {len(drove.get('released', []))}"}
         return {"action": "worker-idle-none",
                 "detail": "no idle worker with fresh open work"}
+    if choice["kind"] == "operator":
+        if dry_run:
+            return {"action": "worker-dry-run", **drove,
+                    "detail": f"would mail the operator {len(choice['escalations'])} lead-less item(s)"}
+        sent = _escalate_operator(None, choice["escalations"], send_mail, root=root,
+                               headline=choice["headline"])
+        return {"action": "escalated-to-operator" if sent else "operator-deduped", **drove,
+                "detail": choice["headline"], "items": len(choice["escalations"])}
     if dry_run:
         if choice["kind"] == "escalate":
             return {"action": "worker-dry-run",

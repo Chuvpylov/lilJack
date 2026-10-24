@@ -285,6 +285,17 @@ def _no_work_left(rep, wrep=None, qrep=None):
     if pending:
         return None                     # the durable queue still has actionable work
     blocked = [t for t in open_tasks if t["state"] == "blocked"]
+    # ⚠ A QUEUE NOBODY RE-DROVE IS NOT A QUEUE AT REST. the operator, 2026-10-20: "There
+    # should be no scenario where that happens" — the Zirec room retired with
+    # rows blocked for hours and rows bound to stopped sessions. Those need the
+    # lead's decision (worker_wake surfaces them in the digest, or to the operator), so
+    # they keep the loop alive; a freshly blocked row still rests as before.
+    try:
+        undriven = liljack_tasks.needs_driving(open_tasks)
+    except Exception:
+        undriven = []
+    if undriven:
+        return None
     if blocked:
         ids = ", ".join(t["id"] for t in blocked[:5])
         more = f" (+{len(blocked) - 5})" if len(blocked) > 5 else ""
@@ -418,10 +429,13 @@ def arm_decision(root=None, tasks_file=None, workspace_root=None) -> dict:
         rows = tasks.tasks(open_only=True, path=tasks_file)
         pending = sum(1 for t in rows if t["state"] in tasks.PENDING)
         blocked = sum(1 for t in rows if t["state"] == "blocked")
+        # Blocked or dead-session rows nobody re-drove arm too (see _no_work_left).
+        undriven = len(tasks.needs_driving(rows, workspace_root=workspace_root))
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
+        undriven = 0
     notices = _pending_notices(workspace_root)
-    arm = bool(pending or notices)
+    arm = bool(pending or notices or undriven)
     if repaired:
         reason = (f"repaired {len(repaired)} clobbered field(s) from the log: {', '.join(repaired[:4])}"
                   + (" …" if len(repaired) > 4 else ""))
@@ -437,6 +451,8 @@ def arm_decision(root=None, tasks_file=None, workspace_root=None) -> dict:
             parts.append(f"{pending} pending task(s)")
         if notices:
             parts.append(f"{notices} pending notice(s)")
+        if undriven:
+            parts.append(f"{undriven} undriven row(s) for the lead")
         reason = "arm: " + ", ".join(parts)
     elif blocked:
         reason = (f"rest: only {blocked} blocked task(s) remain — not actionable; "
@@ -444,7 +460,7 @@ def arm_decision(root=None, tasks_file=None, workspace_root=None) -> dict:
     else:
         reason = "rest: no pending tasks and no pending notices"
     return {"arm": arm, "pending_tasks": pending, "blocked_tasks": blocked,
-            "pending_notices": notices, "error": err, "reason": reason}
+            "undriven_tasks": undriven, "pending_notices": notices, "error": err, "reason": reason}
 
 
 def start_service(name: str, timeout: int = 10) -> dict:

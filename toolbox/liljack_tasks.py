@@ -228,15 +228,54 @@ def session_scope(actor: str, task) -> None:
     worker read three ring-room rows bound to another deepseek session as its own
     work, and nothing stopped it moving them — authorise() compared provider names
     only. the operator: "fix the coordination bugs". Rows with no owner_session, the
-    operator CLI (no LILJACK_WORKSPACE_SESSION) and the operator keep full reach."""
+    operator CLI (no LILJACK_WORKSPACE_SESSION) and the operator keep full reach.
+
+    ⚠ A STOPPED SESSION OWNS NOTHING. Room r-304d412f (2026-10-20): 67 rows sat
+    bound to two stopped sessions while the live claude and codex workers of the
+    same room were refused here, and nothing could rebind them. A row whose bound
+    session the workspace records as `stopped` is adoptable by a live session of
+    the same agent in the row's room (see `_adoptable`); the move is logged."""
     if not task or (actor or "").strip().lower() in OVERRIDE:
         return
     mine = os.environ.get("LILJACK_WORKSPACE_SESSION", "").strip()
     bound = (task.get("owner_session") or "").strip()
     if mine and bound and bound != mine:
+        if _adoptable(task, mine):
+            return
         where = f" in room {task.get('room')}" if task.get("room") else ""
         raise Denied(f"{task.get('id')} belongs to session {bound}{where}; you are session "
-                     f"{mine} — it is not your work (ask the operator to reassign it)")
+                     f"{mine} — it is not your work (ask the room lead to rebind it)")
+
+
+def _adoptable(task, session: str) -> bool:
+    """True when `session` may take `task` over from its bound session: that
+    session is recorded as STOPPED (a missing record is unknown, never dead), and
+    `session` is a live session of the row's owner agent sitting in the row's room."""
+    bound = (task.get("owner_session") or "").strip()
+    room = (task.get("room") or "").strip()
+    if not bound or not room or not session or bound == session:
+        return False
+    if session_state(bound) != "stopped":
+        return False
+    if session_state(session) in (None, "missing", "stopped"):
+        return False
+    if _session_agent(session) != (task.get("owner") or "").strip().lower():
+        return False
+    return _session_room(session) == room
+
+
+def _adopt(store: dict, row: dict, actor: str) -> None:
+    """Rebind `row` to the caller's session when `session_scope` let it through
+    as an adoption, logging both sessions. A no-op for the caller's own rows."""
+    mine = os.environ.get("LILJACK_WORKSPACE_SESSION", "").strip()
+    bound = (row.get("owner_session") or "").strip()
+    if not mine or not bound or bound == mine or actor in OVERRIDE:
+        return
+    if not _adoptable(row, mine):
+        return
+    row["owner_session"] = mine[:80]
+    _log(store, row["id"], row["state"], "rebind", actor,
+         f"{bound} -> {mine}: adopted, {bound} is stopped")
 
 
 def authorise(actor: str, op: str, task=None, owner: str = "") -> str:
@@ -251,6 +290,15 @@ def authorise(actor: str, op: str, task=None, owner: str = "") -> str:
         raise Denied(f"unknown actor {actor!r} — one of {ACTORS}")
     want = (owner or "").strip().lower()
     have = ((task or {}).get("owner") or "").strip().lower()
+
+    # rebind: the heartbeat, the operator or an assigner; `rebind()` checks the rest
+    # (dead source, live same-room target, the caller is the room lead).
+    if op == "rebind":
+        if not task:
+            raise TaskError("no such task")
+        if a == SYSTEM or a in OVERRIDE or is_assigner(a):
+            return a
+        raise Denied(f"{a} may not rebind {task.get('id')} — only the room lead or the operator rebind")
 
     # ── the system actor: two rights, and nothing resembling authorship ──
     if a == SYSTEM:
@@ -807,6 +855,7 @@ def set_state(task_id: str, state: str, by: str, note: str = "", progress: str =
         store = read(p)
         row = _find(store, task_id)
         actor = authorise(by, "state", row)
+        _adopt(store, row, actor)
         # ⚠ ONLY THE ASSIGNER CLEARS A PARK. `held` is a deliberate assigner/lead
         # decision, so an owner may hold its own task but must not un-park it
         # behind the assigner's back.
@@ -1093,6 +1142,7 @@ def set_progress(task_id: str, progress: str, by: str, note: str = None, path=No
         store = read(p)
         row = _find(store, task_id)
         actor = authorise(by, "progress", row)
+        _adopt(store, row, actor)
         row["progress"] = str(progress).strip()[:MAX_PROGRESS]
         if note is not None:
             row["note"] = _note(note)
@@ -1418,6 +1468,153 @@ def _room_team(room: str, workspace_root=None, strict: bool = False):
         return None, []
     lead = next((s for s in members if role.get(s) == "lead"), None)
     return lead, members
+
+
+def session_state(session_id: str, workspace_root=None):
+    """The workspace's recorded state for a session ('running', 'stopped', …),
+    'missing' when the workspace is readable but has no such session, and None
+    when it cannot tell (no workspace, unreadable store)."""
+    import json as _json
+    import sqlite3
+    sid = str(session_id or "").strip()
+    db = _workspace_db(workspace_root)
+    if not sid or not db.exists():
+        return None
+    try:
+        con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)
+        row = con.execute("SELECT data FROM sessions WHERE id=?", (sid,)).fetchone()
+        con.close()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return "missing"
+    try:
+        return str((_json.loads(row[0] or "{}") or {}).get("state") or "unknown")
+    except (ValueError, TypeError):
+        return "unknown"
+
+
+def _session_room(session_id: str, workspace_root=None) -> str:
+    import sqlite3
+    db = _workspace_db(workspace_root)
+    if not session_id or not db.exists():
+        return ""
+    try:
+        con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)
+        row = con.execute("SELECT room_id FROM room_members WHERE session_id=?",
+                          (session_id,)).fetchone()
+        con.close()
+    except sqlite3.Error:
+        return ""
+    return row[0] if row else ""
+
+
+DEAD_STATES = ("stopped", "missing")
+
+
+def rebind_many(items, by: str, path=None, workspace_root=None) -> dict:
+    """Rebind several rows under ONE registry lock; [(task_id, session, note)].
+
+    Returns {"rebound": [row], "errors": {task_id: message}}. Each row is checked
+    on its own, so one bad item never blocks the rest of a heartbeat pass.
+
+    ⚠ NO OPEN ROW MAY SIT ON A DEAD SESSION. Room r-304d412f (2026-10-20): 67 rows
+    stayed bound to two stopped sessions with no op able to move them, while live
+    workers of the same agents sat idle in the room. The rules:
+      · the target is a live (recorded, not stopped) session in the row's room;
+      · the heartbeat may only move a row off a STOPPED or vanished session, to
+        a session of the row's own agent;
+      · a launched assigner session must be the row's room lead; the operator and the
+        operator CLI (no session) may rebind anything, and may change the owner
+        agent to the target's.
+    Every move is logged as op `rebind` with both session ids."""
+    p = Path(path) if path else default_path()
+    mine = os.environ.get("LILJACK_WORKSPACE_SESSION", "").strip()
+    out = {"rebound": [], "errors": {}}
+    with board.lock(p):
+        store = read(p)
+        for task_id, target, note in items:
+            try:
+                row = _find(store, task_id)
+                actor = authorise(by, "rebind", row)
+                target = str(target or "").strip()
+                if row["state"] not in OPEN:
+                    raise TaskError(f"{row['id']} is {row['state']}; only open rows rebind")
+                room = (row.get("room") or "").strip()
+                if session_state(target, workspace_root) in (None, "missing", "stopped"):
+                    raise TaskError(f"{target} is not a live session")
+                if room and _session_room(target, workspace_root) != room:
+                    raise TaskError(f"{target} is not in room {room}")
+                agent = _session_agent(target, workspace_root) or ""
+                bound = (row.get("owner_session") or "").strip()
+                if actor == SYSTEM:
+                    if agent != row.get("owner"):
+                        raise Denied(f"{SYSTEM} may not move {row['id']} to another agent ({agent})")
+                    if bound and session_state(bound, workspace_root) not in DEAD_STATES:
+                        raise Denied(f"{SYSTEM} may not move {row['id']} off {bound}: it is not stopped")
+                elif actor not in OVERRIDE and mine:
+                    lead, _ = _room_team(room, workspace_root) if room else (None, [])
+                    if mine != lead:
+                        raise Denied(f"{actor} session {mine} is not the lead of room {room or '(none)'}"
+                                     f" — only the room lead or the operator rebind {row['id']}")
+                if agent and agent != row.get("owner"):
+                    if agent not in AGENTS:
+                        raise TaskError(f"{target} runs unknown agent {agent!r}")
+                    row["owner"] = agent
+                row["owner_session"] = target[:80]
+                row["updated"] = now()
+                _log(store, row["id"], row["state"], "rebind", actor,
+                     f"{bound or '(none)'} -> {target}" + (f": {note}" if note else ""))
+                out["rebound"].append(dict(row))
+            except (TaskError, Denied) as exc:
+                out["errors"][task_id] = (type(exc), str(exc))
+        if out["rebound"]:
+            _save(store, p)
+    return out
+
+
+def rebind(task_id: str, session: str, by: str, note: str = "", path=None,
+           workspace_root=None) -> dict:
+    """Rebind one row to `session` (see `rebind_many` for the rules)."""
+    res = rebind_many([(task_id, session, note)], by, path=path, workspace_root=workspace_root)
+    if task_id in res["errors"]:
+        kind, msg = res["errors"][task_id]
+        raise kind(msg)
+    return res["rebound"][0]
+
+
+# A blocked row nobody has touched for this long needs the lead's decision: it
+# keeps the heartbeat running and is named, with its age, in the lead's digest.
+BLOCKED_REDRIVE_S = 6 * 3600
+
+
+def _age_s(row, now_ts=None):
+    try:
+        ts = datetime.fromisoformat(str(row.get("updated") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (now_ts or datetime.now(timezone.utc).timestamp()) - ts.timestamp()
+
+
+def needs_driving(rows, now_ts=None, workspace_root=None) -> list:
+    """Open rows the room lead must act on although no owner can: blocked longer
+    than BLOCKED_REDRIVE_S, or bound to a session the workspace records as
+    stopped. Held rows are parked on purpose and never count."""
+    out = []
+    for t in rows:
+        state = t.get("state")
+        if state not in OPEN or state == "held":
+            continue
+        age = _age_s(t, now_ts)
+        if state == "blocked" and age is not None and age >= BLOCKED_REDRIVE_S:
+            out.append(t)
+            continue
+        bound = (t.get("owner_session") or "").strip()
+        if bound and t.get("room") and session_state(bound, workspace_root) == "stopped":
+            out.append(t)
+    return out
 
 
 def room_tasks(project: str, room: str, viewer_session: str, path=None,
