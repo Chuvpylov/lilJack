@@ -2424,6 +2424,12 @@ static void draw_room(App *a,lj_rect r){
             y+=CELLH;wrapped(body.x+CELLW,y,body.w-CELLW,body.y,body.y+body.h,v,TEXT);
             y+=lines*CELLH;total+=(lines+1)*CELLH;
         }
+        for(int g=0;g<lj_metrics_gpu_count();g++)for(int mem=0;mem<2;mem++){
+            const char *gpu_label=lj_metrics_gpu_label(g,mem);
+            int lines=wrapped_lines(gpu_label,(body.w-CELLW)/CELLW);
+            wrapped(body.x+CELLW,y,body.w-CELLW,body.y,body.y+body.h,gpu_label,CYAN);
+            y+=lines*CELLH;total+=lines*CELLH;
+        }
         a->status_scroll=clamp(a->status_scroll,0,total>body.h?total-body.h:0);
         draw_scrollbar(viewport,a->status_scroll,total,body.h,scrollbar_active(a,"room",viewport));
         hit(a,body,H_ROOM,0,NULL);return;
@@ -3133,17 +3139,21 @@ static void draw_block_load(void *app,void *vctx){
             text(r.x+r.w-((int)strlen(cost)+3)*CELLW,headtext,cost,DIM,12*CELLW);
             lj_rect body={r.x+CELLW,r.y+head,r.w-2*CELLW,r.h-head-CELLH};
             hit(a,body,H_LOAD,0,NULL);
-            int series=LJ_METRIC_COUNT,each=body.h/CELLH/series;
+            int ngpu=lj_metrics_gpu_count();
+            int series=ngpu?2+2*ngpu:LJ_METRIC_COUNT,each=body.h/CELLH/series;
             if(each<1)each=1;
             for(int m=0;m<series;m++){
                 int gy=body.y+m*each*CELLH;
                 if(gy+CELLH>body.y+body.h)break;
-                uint32_t lcol=m==LJ_METRIC_GPU||m==LJ_METRIC_GPU_MEM?CYAN:GREEN;
+                uint32_t lcol=m>=2?CYAN:GREEN;
                 /* Header and LOAD share completed 100ms means. */
-                const float *hist=NULL;int n=lj_metrics_display_history(m,&hist);
+                const float *hist=NULL;
+                int device=ngpu&&m>=2;
+                int n=device?lj_metrics_gpu_display_history((m-2)/2,(m-2)%2,&hist):lj_metrics_display_history(m,&hist);
+                const char *metric_label=device?lj_metrics_gpu_label((m-2)/2,(m-2)%2):lj_metrics_display_label(m);
                 int px,py,cols,rows=each-1;
                 if(rows>=1){
-                    text(body.x,gy,lj_metrics_display_label(m),lcol,body.w);
+                    text(body.x,gy,metric_label,lcol,body.w);
                     px=body.x;py=gy+CELLH;cols=body.w/CELLW;
                 }else{
                     /* ⚠ A LABEL WITH NO PLOT IS NOT A LOAD TILE. Four series in
@@ -3153,9 +3163,11 @@ static void draw_block_load(void *app,void *vctx){
                      * at it and said there is no CPU graph, and he was right.
                      * When there is no room BELOW the label the sparkline goes
                      * ON the label's row, to its right. A graph, always. */
-                    enum { LOAD_LABEL_CELLS = 16 };
-                    text(body.x,gy,lj_metrics_display_label(m),lcol,LOAD_LABEL_CELLS*CELLW);
-                    px=body.x+LOAD_LABEL_CELLS*CELLW;py=gy;
+                    int label_cells=device?body.w/CELLW-8:16;
+                    if(label_cells>64)label_cells=64;
+                    if(label_cells<1)label_cells=1;
+                    text(body.x,gy,metric_label,lcol,label_cells*CELLW);
+                    px=body.x+label_cells*CELLW;py=gy;
                     cols=(body.x+body.w-px)/CELLW;rows=1;
                 }
                 if(cols<1||rows<1||!hist)continue;

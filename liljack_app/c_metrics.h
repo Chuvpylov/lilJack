@@ -44,6 +44,26 @@ enum {
     LJ_METRIC_HISTORY = 256
 };
 
+/* Enumeration is bounded and cached at init (restart to discover hotplugged cards).
+ * Slots retain their UUID/handle for this session, independent of index changes.
+ * Legacy lj_sample GPU fields and aggregate GPU histories alias the first card.
+ * No heap allocation or subprocesses; missing readings are NAN, not idle zero.
+ * UUID is required: devices without a stable identity are skipped. */
+#define LJ_METRIC_GPUS_MAX 16
+typedef struct {
+    unsigned int index;                 /* discovery index, informational only */
+    char name[96];
+    char uuid[96];
+    float utilization, memory_fraction;
+    uint64_t memory_used, memory_total;  /* bytes; valid only if memory_fraction is finite */
+} lj_gpu_sample;
+int lj_metrics_gpu_count(void);
+const lj_gpu_sample *lj_metrics_gpu(int slot); /* NULL for invalid slots; sampler-owned */
+/* memory=0: compute; memory=1: VRAM fraction. Invalid arguments return 0. */
+int lj_metrics_gpu_history(int slot, int memory, const float **out);
+int lj_metrics_gpu_display_history(int slot, int memory, const float **out);
+const char *lj_metrics_gpu_label(int slot, int memory);
+
 /* Default LOAD-plot smoothing window, in milliseconds. The sampler rate-limits
  * to ~25ms (LJ_METRICS_REF_INTERVAL_MS), so this is 4 samples at the default
  * cadence; it is capped at LJ_METRIC_HISTORY. Override with LJ_METRICS_SMOOTH_MS

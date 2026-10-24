@@ -131,3 +131,21 @@ pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 MIT. See [LICENSE](LICENSE). Vendored HUI keeps its own MIT notice in `vendor/hui/LICENSE`.
+
+### NVIDIA device monitoring
+
+The LOAD tile shows separate compute and VRAM histories for each NVIDIA card,
+with device names, UUIDs, and VRAM used/total in GiB. The scrollable MACHINE
+panel also lists full device readings. Enlarge the LOAD tile to see more rows
+and longer labels. The compact header continues to show the first discovered
+GPU, preserving the existing single-card layout.
+
+NVML is loaded dynamically; no NVIDIA SDK, Python polling, or `nvidia-smi`
+subprocess is needed. Up to 16 UUID-identified devices are discovered once at
+startup, with handles and fixed-size history rings retained for the session.
+Restart lilJack after adding/removing cards. Unsupported or failed readings
+appear unavailable and leave history gaps; other cards continue sampling.
+The legacy C GPU metrics alias the first successfully discovered card.
+
+Deterministic multi-device coverage uses `tests/mock_nvml.c` through the real
+`dlopen` boundary, and runs as part of `tests/run_liljack_native_tests.sh`.
