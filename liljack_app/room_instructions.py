@@ -10,19 +10,27 @@ Never touches text outside the markers.
 """
 from pathlib import Path
 
+from . import lead_rules as _lead_rules
+
 BEGIN = "<!-- liljack:room-fragment:begin -->"
 END = "<!-- liljack:room-fragment:end -->"
 FILES = ("CLAUDE.md", "AGENTS.md")
 
-LEAD_RULES = [
-    "- Announce a shared-file edit in the room BEFORE writing; re-read the file first; one editor per file at a time.",
-    "- Every landing: fail-before/pass-after test output, the native suite line, the report path, and a relaunch line with the build id.",
-    "- Never park a room in REVIEW: ask the operator in the room, keep WORK; the heartbeat drives owners until every todo is done.",
-    "- Sixel-first: the ANSI cell path is a fallback for terminals without sixel, never the target of visual work.",
-    "- Update your registry row (task_update progress) whenever you post, so the heartbeat does not hand your task to another session of your agent.",
-    "- A direction to another agent is incomplete until it is a durable registry task bound to that agent's exact owner_session and the worker acknowledges or starts it.",
-    "- Monitor assigned, stale and blocked rows; explicitly unblock, reassign or escalate them instead of assuming a room message was delivered.",
-]
+def room_command(project, room_id) -> str:
+    """The re-read command every instruction site prints.
+
+    ⚠ NOT `python3 -m liljack_app.cli`. Agents run with an allowlisted env that
+    has no PYTHONPATH (toolbox/liljack_deepseek.py SAFE_ENV), so that form fails
+    with "No module named 'liljack_mail'" from any folder but the repo root
+    (deepseek integration check, 2026-10-24, G1). The repo's own `liljack`
+    wrapper sets PYTHONPATH itself — the intro already used it — so every site
+    now prints its absolute path."""
+    cli = Path(__file__).resolve().parents[1] / "liljack"
+    return f"{cli} room --root $LILJACK_WORKSPACE_ROOT --project {project} --context --to {room_id}"
+
+
+# Kept for importers; the live list is lead_rules.load() (editable).
+LEAD_RULES = ["- " + r for r in _lead_rules.DEFAULTS]
 
 
 def fragment(room_id, name, purpose, folder, project, standing_lines, overview=""):
@@ -30,10 +38,10 @@ def fragment(room_id, name, purpose, folder, project, standing_lines, overview="
              "# lilJack room context (generated; do not edit inside the markers)",
              f"Room: {name} ({room_id})", f"Purpose: {purpose or '-'}", f"Folder: {folder}", f"Project: {project}",
              "Re-read the live context any time (after compaction or a restart):",
-             f"    python3 -m liljack_app.cli room --root $LILJACK_WORKSPACE_ROOT --project {project} --context --to {room_id}",
+             "    " + room_command(project, room_id),
              ""]
     lines += list(standing_lines)
-    lines += ["", "Lead rules in force:"] + LEAD_RULES
+    lines += ["", "Lead rules in force:"] + _lead_rules.lines()
     if overview:
         lines += ["", "Project overview (from PROJECTS.md):", overview.rstrip()]
     lines += [END]

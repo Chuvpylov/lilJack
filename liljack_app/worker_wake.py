@@ -605,8 +605,8 @@ def context_line(room: str) -> str:
     room = (room or "").strip()
     if not room:
         return ""
-    return (f" Room {room} — re-read context: python3 -m liljack_app.cli room"
-            f" --root $LILJACK_WORKSPACE_ROOT --project $LILJACK_WORKSPACE_PROJECT --context --to {room}")
+    from .room_instructions import room_command   # the wrapper path, not `python3 -m` (G1)
+    return f" Room {room} — re-read context: " + room_command("$LILJACK_WORKSPACE_PROJECT", room)
 
 
 def nudge_text(choice) -> str:

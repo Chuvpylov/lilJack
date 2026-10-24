@@ -28,6 +28,7 @@ run_proof mcp-routing python3 tests/test_liljack_mcp.py
 run_proof canvas-cli python3 tests/test_liljack_canvas_cli.py
 run_proof worker-wake-prune python3 tests/test_liljack_worker_wake_prune.py
 run_proof undriven-rows python3 tests/test_liljack_undriven_rows.py
+run_proof lead-rules python3 tests/test_liljack_lead_rules.py
 run_proof canvas-cli python3 tests/test_liljack_canvas_cli.py
 run_proof registry-parse-once python3 tests/test_liljack_registry_parse_once.py
 printf 'All Python lilJack proofs passed (4/4).\n'

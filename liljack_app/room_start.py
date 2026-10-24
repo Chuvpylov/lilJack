@@ -17,6 +17,9 @@ import liljack_tasks as tasks
 from liljack_mail import _scrub
 from liljack_workspace import Workspace, clean, project_key, session_key, utcnow
 
+from . import lead_rules
+from .room_instructions import room_command
+
 AGENTS = ('claude', 'codex', 'deepseek', 'shell')
 ROLES = ('lead', 'worker', 'reviewer')
 BACKENDS = ('tmux', 'native')
@@ -250,19 +253,9 @@ def _onboarding_lines():
     ]
 
 
-LEAD_RULES = [
-    'LEAD RULES (standing; they survive context compaction and restarts):',
-    '- Announce shared-file edits in the room BEFORE writing, and re-read the file first.',
-    '- Every landing carries: fail-before/pass-after test output, the native suite line, '
-    'the report path, and a relaunch line with the build id.',
-    '- Never park a room in REVIEW: ask the operator in the room and keep the room in WORK.',
-    '- Sixel-first: the ANSI cell path is only a fallback.',
-    '- Keep your registry row fresh with task_update whenever you post.',
-    '- A direction to another agent is incomplete until it is a registry task bound '
-    'to that agent\'s exact session and the worker acknowledges or starts it.',
-    '- Monitor assigned, stale and blocked rows; explicitly unblock, reassign or '
-    'escalate them instead of assuming a room message was delivered.',
-]
+LEAD_RULES_HEADER = 'LEAD RULES (standing; they survive context compaction and restarts):'
+# Kept for importers; the live list is lead_rules.load() (editable from the NEW ROOM form).
+LEAD_RULES = [LEAD_RULES_HEADER] + ['- ' + r for r in lead_rules.DEFAULTS]
 
 
 def system_prompt_text(project, room_id=''):
@@ -272,9 +265,8 @@ def system_prompt_text(project, room_id=''):
     room_id = str(room_id or '').strip()
     if room_id:
         lines += [f'Room: {room_id}',
-                  'Read current room context: python3 -m liljack_app.cli room --root '
-                  f'$LILJACK_WORKSPACE_ROOT --project {project_key(project)} --context --to {room_id}']
-    lines += LEAD_RULES
+                  'Read current room context: ' + room_command(project_key(project), room_id)]
+    lines += [LEAD_RULES_HEADER] + lead_rules.lines()
     return '\n'.join(lines)
 
 

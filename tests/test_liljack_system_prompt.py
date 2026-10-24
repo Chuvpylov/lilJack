@@ -12,6 +12,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'toolbox'))
+# The rules are user-editable (lead_rules.py); test against the defaults, not
+# whatever this machine's ~/.config/liljack/lead_rules.json holds.
+import os  # noqa: E402
+os.environ['LILJACK_RULES_PATH'] = str(Path(tempfile.mkdtemp()) / 'lead_rules.json')
 from liljack_app import runtime                                  # noqa: E402
 from liljack_app.room_start import system_prompt_text, _onboarding_lines, LEAD_RULES  # noqa: E402
 
@@ -52,7 +56,7 @@ class SystemPromptTests(unittest.TestCase):
         for line in LEAD_RULES:
             self.assertIn(line, text)
         self.assertIn('\nRoom: r-abc\n', text)
-        self.assertIn('python3 -m liljack_app.cli room --root $LILJACK_WORKSPACE_ROOT '
+        self.assertIn(f"{ROOT / 'liljack'} room --root $LILJACK_WORKSPACE_ROOT "
                       f'--project {self.project} --context --to r-abc', text)
 
     def _launch(self, agent, room_id='', intro='hello'):

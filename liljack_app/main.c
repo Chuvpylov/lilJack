@@ -105,9 +105,14 @@ enum {H_SESSION=1,H_CREATE,H_HEADER,H_TERMINAL,H_RETILE,H_FULL,H_TEAM,H_HIDE,
       H_POPUP_TOGGLE,H_POPUP_BACK,H_POPUP_FORWARD,H_POPUP_MUTE,
       H_POPUP_VOL_DOWN,H_POPUP_VOL_UP,H_POPUP_SEEK,H_RIBBON_MORE,H_POPUP_RESOLUTION,H_POPUP_RESIZE,H_POPUP_VOLUME,H_SETTINGS,H_SET_ROW,H_SET_DEC,H_SET_INC,H_SET_RESET,H_SET_CLOSE,H_SET_SAVE,H_ROOM_MORE,
       H_ROOM_FOLDER_ENTRY,H_ROOM_FOLDER_UP,H_ROOM_FOLDER_USE,H_ROOM_FOLDER_BROWSE,
-      H_FB_OPEN,H_FB_HOME,H_FB_PROJECT,H_FB_HIDDEN,H_FB_CRUMB,H_FB_PATH,H_FB_CANCEL,H_FB_CLOSE,H_FB_BODY};
+      H_FB_OPEN,H_FB_HOME,H_FB_PROJECT,H_FB_HIDDEN,H_FB_CRUMB,H_FB_PATH,H_FB_CANCEL,H_FB_CLOSE,H_FB_BODY,
+      H_ROOM_SLOT_ROLE,H_ROOM_SLOT_DEL,H_ROOM_SLOT_ADD,H_ROOM_RULES,H_RULE_ROW,H_RULE_DEL,H_RULE_ADD,H_RULES_SAVE,H_RULES_CANCEL,H_RULES_DEFAULTS};
 /* Which dropdown is open, and one row of it. */
-enum {MENU_NONE=0,MENU_ROLE,MENU_FILE,MENU_FILES,MENU_ROOM,MENU_STATE,MENU_TOOLBAR,MENU_OPEN_HERE,MENU_LOGO,MENU_ROOMS};
+enum {MENU_NONE=0,MENU_ROLE,MENU_FILE,MENU_FILES,MENU_ROOM,MENU_STATE,MENU_TOOLBAR,MENU_OPEN_HERE,MENU_LOGO,MENU_ROOMS,MENU_SLOT_KIND,MENU_SLOT_ROLE};
+/* NEW ROOM agents and the editable lead rules (2026-10-24). */
+#define ROOM_SLOTS 8
+#define RULES_MAX 24
+#define RULE_CAP 401
 /* The room lifecycle, in the order the operator named it. `removed` is a 30-day
  * trash, not a delete, so it is listed last and never shown by default. */
 static const char *ROOM_STATES[6]={"active","resolved","backlog","abandoned","archived","removed"};
@@ -160,7 +165,18 @@ typedef struct {
      * agents with role assignment, its own working folder, and a first TODO —
      * because the TODO is what arms the heartbeat and the intro is what tells
      * an agent where it is. A bare name creates a room nobody is in. */
-    int room_dialog,room_field,room_agent[4];
+    int room_dialog,room_field;
+    int menu_team;                 /* the open ROLE dropdown hangs off the TEAM panel: reopen it after */
+    /* ⚠ AGENTS ARE ROWS, NOT FOUR CYCLING BADGES. the operator, 2026-10-24: "i want to
+     * select more then 3 workers and worker role should be dropdown not click to
+     * rotate". One row per agent to launch (kind + role, both dropdowns), up to
+     * ROOM_SLOTS; the same kind may appear many times. Roles: 1 worker,
+     * 2 reviewer, 3 lead (ROLE_NAME). Kinds index ROOM_KIND. */
+    int room_nslot,room_slot_kind[ROOM_SLOTS],room_slot_role[ROOM_SLOTS];
+    /* The lead-rules editor over the form: the list the backend serves
+     * (lead_rules.py), edited in place; CANCEL restores rules_backup. */
+    int rules_dialog,rules_sel,rules_scroll,nrules,nrules_backup,nrule_defaults,rules_custom,rules_loading;
+    char lead_rules[RULES_MAX][RULE_CAP],rules_backup[RULES_MAX][RULE_CAP],rule_defaults[RULES_MAX][RULE_CAP];
     char room_name[161],room_folder[512],room_purpose[257],room_todo[3][161];
     char room_folder_listed[520],room_folder_base[512],room_folder_error[160];
     char room_folder_entries[500][256];
@@ -586,6 +602,7 @@ static int send_request(App *a,const char *s);
  * looking at the thing they just clicked. One deferred slot is enough: the
  * newest intent replaces an older unsent one, and it is sent the moment the
  * helper answers. */
+static void rules_apply_packet(App *a,json_object *p);
 static int request(App *a,json_object *o){
     if(a->demo){json_object_put(o);toast(a,"Demo workspace: actions are previews; no live agents launched");return 0;}
     if(a->backend_in<0){json_object_put(o);toast(a,"Workspace helper is not running");return 0;}
@@ -833,6 +850,7 @@ static void apply_snapshot(App *a,json_object *d){
     if(!a->nroom_view)load_workspace(a);
     if(a->active_room[0]&&!room_by_id(a,a->active_room))switch_workspace(a,"");
     prune_workspace(a);Session *focused=session(a,a->focus);if(focused&&!in_workspace(a,focused))copy(a->focus,sizeof(a->focus),"room");Room *active=room_by_id(a,a->active_room);if(active&&active->collapsed){copy(a->focus,sizeof(a->focus),"room");a->full[0]=0;}
+    if(jget(d,"lead_rules"))rules_apply_packet(a,jget(d,"lead_rules"));
     const char *created_room=jstr(d,"created_room");
     if(*created_room){a->room_starting=0;a->room_dialog=0;a->room_name[0]=0;switch_workspace(a,created_room);
         /* ⚠ A PARTIAL START IS NOT A SUCCESS. codex cannot roll back a spawned
@@ -1207,6 +1225,9 @@ static void wrapped(int x,int y,int width,int top,int bottom,const char *s,uint3
 /* Fields in tab order. AGENTS is a row of four cycling badges, not text. */
 enum {RF_NAME=0,RF_FOLDER,RF_PURPOSE,RF_TODO0,RF_TODO1,RF_TODO2,RF_COUNT};
 static const char *ROLE_NAME[4]={"","worker","reviewer","lead"};
+static const char *ROOM_KIND[4]={"claude","codex","deepseek","shell"};
+static const char *ROOM_KIND_LABEL[4]={"CLAUDE","CODEX","DEEPSEEK","SHELL"};
+static const char *ROLE_LABEL[4]={"","WORKER","REVIEWER","LEAD"};
 static char *room_field_buf(App *a,int field,size_t *cap){
     switch(field){
         case RF_NAME:    if(cap)*cap=sizeof(a->room_name);    return a->room_name;
@@ -1215,7 +1236,91 @@ static char *room_field_buf(App *a,int field,size_t *cap){
         default:         if(cap)*cap=sizeof(a->room_todo[0]); return a->room_todo[clamp(field-RF_TODO0,0,2)];
     }
 }
-static int room_lead_count(App *a){int n=0;for(int i=0;i<4;i++)if(a->room_agent[i]==3)n++;return n;}
+static int room_lead_count(App *a){int n=0;for(int i=0;i<a->room_nslot;i++)if(a->room_slot_role[i]==3)n++;return n;}
+/* Exactly one lead: making slot i the lead demotes every other lead to worker. */
+static void room_slot_set_role(App *a,int i,int role){
+    if(i<0||i>=a->room_nslot)return;role=clamp(role,1,3);a->room_slot_role[i]=role;
+    if(role==3)for(int k=0;k<a->room_nslot;k++)if(k!=i&&a->room_slot_role[k]==3)a->room_slot_role[k]=1;
+    a->dirty=1;
+}
+static int room_slot_add(App *a,int kind,int role){
+    if(a->room_nslot>=ROOM_SLOTS){toast(a,"A room starts with at most 8 agents");return -1;}
+    int i=a->room_nslot++;a->room_slot_kind[i]=clamp(kind,0,3);a->room_slot_role[i]=1;
+    room_slot_set_role(a,i,role);return i;
+}
+static void room_slot_remove(App *a,int i){
+    if(i<0||i>=a->room_nslot)return;
+    if(a->room_nslot<=1){toast(a,"A room needs at least one agent");return;}
+    for(int k=i;k+1<a->room_nslot;k++){a->room_slot_kind[k]=a->room_slot_kind[k+1];a->room_slot_role[k]=a->room_slot_role[k+1];}
+    a->room_nslot--;a->dirty=1;
+}
+/* ── lead rules ──────────────────────────────────────────────────────────── */
+static void rules_copy(char dst[][RULE_CAP],int *nd,char src[][RULE_CAP],int ns){
+    *nd=clamp(ns,0,RULES_MAX);for(int i=0;i<*nd;i++)copy(dst[i],RULE_CAP,src[i]);
+}
+static int rules_from_json(char dst[][RULE_CAP],json_object *arr){
+    int n=0;if(!arr||!json_object_is_type(arr,json_type_array))return 0;
+    for(size_t i=0;i<json_object_array_length(arr)&&n<RULES_MAX;i++){
+        const char *t=json_object_get_string(json_object_array_get_idx(arr,i));if(t)copy(dst[n++],RULE_CAP,t);}
+    return n;
+}
+static void rules_apply_packet(App *a,json_object *p){
+    if(!p)return;
+    int n=rules_from_json(a->rule_defaults,jget(p,"defaults"));if(n)a->nrule_defaults=n;
+    json_object *c=jget(p,"custom");a->rules_custom=c&&json_object_get_boolean(c);
+    /* An open editor keeps what is being typed: a reply only fills it while it
+     * is still waiting for its first load (rules_loading). */
+    if(!a->rules_dialog||a->rules_loading){char tmp[RULES_MAX][RULE_CAP];int m=rules_from_json(tmp,jget(p,"rules"));
+        if(m){rules_copy(a->lead_rules,&a->nrules,tmp,m);rules_copy(a->rules_backup,&a->nrules_backup,tmp,m);a->rules_sel=0;}
+        a->rules_loading=0;a->dirty=1;}
+}
+static void rules_request(App *a,const char *action){
+    if(a->demo)return;json_object *o=json_object_new_object();jadd(o,"action",action);
+    if(!strcmp(action,"rules_set")){json_object *arr=json_object_new_array();
+        for(int i=0;i<a->nrules;i++)json_object_array_add(arr,json_object_new_string(a->lead_rules[i]));
+        json_object_object_add(o,"rules",arr);}
+    request(a,o);
+}
+static void rules_open(App *a){
+    /* ⚠ LOADED ON OPEN, NOT WITH THE FORM. A rules_get sent when NEW ROOM opened
+     * held request()'s one in-flight slot, so a quick CREATE was queued behind
+     * it (room-start-once S1 caught it). The editor asks when it is opened. */
+    if(!a->demo){a->rules_loading=1;rules_request(a,"rules_get");}
+    rules_copy(a->rules_backup,&a->nrules_backup,a->lead_rules,a->nrules);
+    if(!a->nrules){a->nrules=1;a->lead_rules[0][0]=0;}
+    a->rules_dialog=1;a->rules_sel=0;a->rules_scroll=0;a->dirty=1;
+}
+static void rules_close(App *a,int save){
+    if(save&&a->rules_loading){toast(a,"Rules are still loading");return;}
+    if(save){
+        int n=0;for(int i=0;i<a->nrules;i++){const char *t=a->lead_rules[i];while(*t==' ')t++;if(*t){if(n!=i)copy(a->lead_rules[n],RULE_CAP,a->lead_rules[i]);n++;}}
+        if(!n){toast(a,"Keep at least one rule, or press DEFAULTS");return;}
+        a->nrules=n;a->rules_dialog=0;a->rules_custom=1;rules_request(a,"rules_set");
+        toast(a,a->demo?"Rules kept for this demo session":"Lead rules saved · new rooms and prompts use them");
+    } else {rules_copy(a->lead_rules,&a->nrules,a->rules_backup,a->nrules_backup);a->rules_dialog=0;}
+    a->dirty=1;
+}
+static void rules_insert(App *a,int at){
+    if(a->nrules>=RULES_MAX){toast(a,"At most 24 rules");return;}
+    at=clamp(at,0,a->nrules);for(int k=a->nrules;k>at;k--)copy(a->lead_rules[k],RULE_CAP,a->lead_rules[k-1]);
+    a->lead_rules[at][0]=0;a->nrules++;a->rules_sel=at;a->dirty=1;
+}
+static void rules_delete(App *a,int i){
+    if(i<0||i>=a->nrules)return;
+    for(int k=i;k+1<a->nrules;k++)copy(a->lead_rules[k],RULE_CAP,a->lead_rules[k+1]);
+    a->nrules--;if(!a->nrules){a->nrules=1;a->lead_rules[0][0]=0;}
+    a->rules_sel=clamp(a->rules_sel,0,a->nrules-1);a->dirty=1;
+}
+static void rules_input(App *a,const char *value){
+    for(const unsigned char *p=(const unsigned char*)value;*p;p++)if(*p<32||*p==127){toast(a,"A rule stays on one line");return;}
+    char *buf=a->lead_rules[clamp(a->rules_sel,0,a->nrules-1)];size_t have=strlen(buf),n=strlen(value);
+    if(have+n>=RULE_CAP){toast(a,"A rule is limited to 400 characters");return;}
+    memcpy(buf+have,value,n+1);a->dirty=1;
+}
+static void rules_backspace(App *a){
+    char *buf=a->lead_rules[clamp(a->rules_sel,0,a->nrules-1)];size_t n=strlen(buf);
+    if(!n)return;do{n--;}while(n&&((unsigned char)buf[n]&0xc0)==0x80);buf[n]=0;a->dirty=1;
+}
 /* Folders sort the way a person scans them: case-folded, then byte order. */
 static int room_folder_compare(const void *x,const void *y){
     const unsigned char *p=x,*q=y;
@@ -1286,7 +1391,8 @@ static void room_dialog_open(App *a){
     copy(a->room_folder,sizeof(a->room_folder),a->project);
     a->room_folder_listed[0]=0;a->fb_open=a->fb_edit=0;
     /* One lead, because a room with none has nobody who owns all the todos. */
-    a->room_agent[0]=3;a->room_agent[1]=1;a->room_agent[2]=2;a->room_agent[3]=0;
+    a->room_nslot=0;a->rules_dialog=0;
+    room_slot_add(a,0,3);room_slot_add(a,1,1);room_slot_add(a,2,2);
 }
 static void room_name_input(App *a,const char *value){
     if(folder_browser_text(a,value))return;
@@ -1325,13 +1431,12 @@ static void create_room(App *a){
         jadd(o,"action","room_start");jadd(o,"name",name);
         jadd(o,"folder",a->room_folder);jadd(o,"purpose",a->room_purpose);
         json_object *agents=json_object_new_array();
-        const char *kinds[4]={"claude","codex","deepseek","shell"};
         /* Lead first: codex launches in array order and a worker needs its lead
-         * to exist before it can be parented. */
-        for(int pass=3;pass>=1;pass--)for(int i=0;i<4;i++){
-            if(a->room_agent[i]!=pass)continue;
+         * to exist before it can be parented. Same-kind rows stay in form order. */
+        for(int pass=3;pass>=1;pass--)for(int i=0;i<a->room_nslot;i++){
+            if(a->room_slot_role[i]!=pass)continue;
             json_object *one=json_object_new_object();
-            jadd(one,"agent",kinds[i]);jadd(one,"role",ROLE_NAME[pass]);
+            jadd(one,"agent",ROOM_KIND[clamp(a->room_slot_kind[i],0,3)]);jadd(one,"role",ROLE_NAME[pass]);
             json_object_array_add(agents,one);
         }
         json_object_object_add(o,"agents",agents);
@@ -1575,7 +1680,7 @@ static void menu_open(App *a,int kind,lj_rect at,const char *target){
     a->ribbon_open=0;
     a->team=a->status_open=0;a->dirty=1;
 }
-static void menu_close(App *a){a->menu_kind=MENU_NONE;a->menu_target[0]=0;a->dirty=1;}
+static void menu_close(App *a){a->menu_kind=MENU_NONE;a->menu_target[0]=0;if(a->menu_team){a->team=1;a->menu_team=0;}a->dirty=1;}
 /* ⚠ THE NINE, IN ONE PLACE. The ribbon draws this list and activate() dispatches
  * against it, so an item cannot be drawn in an order the click handler does not
  * share — which is exactly how a menu ends up firing the row above the one you
@@ -1684,6 +1789,19 @@ static int menu_rows(App *a,MenuRow *out,int cap){
         {MenuRow *o=ROW("OPEN A NEW ROOM HERE",H_NEW_ROOM,1);
          if(o&&!a->files_path[0]){o->disabled=1;copy(o->note,sizeof(o->note),"browse to a folder first");}
          else if(o)copy(o->note,sizeof(o->note),"agents start in this folder");}
+    } else if(a->menu_kind==MENU_SLOT_KIND||a->menu_kind==MENU_SLOT_ROLE){
+        /* The NEW ROOM agent row's two dropdowns; menu_target is the row index. */
+        int i=atoi(a->menu_target);
+        if(i>=0&&i<a->room_nslot){
+            if(a->menu_kind==MENU_SLOT_KIND)for(int k=0;k<4;k++){
+                MenuRow *row=ROW(ROOM_KIND[k],H_ROOM_AGENT,k);if(row)row->checked=a->room_slot_kind[i]==k;}
+            else for(int r=1;r<=3;r++){
+                MenuRow *row=ROW(ROLE_NAME[r],H_ROOM_SLOT_ROLE,r);if(!row)break;
+                row->checked=a->room_slot_role[i]==r;
+                if(r==3)for(int k=0;k<a->room_nslot;k++)if(k!=i&&a->room_slot_role[k]==3){
+                    snprintf(row->note,sizeof(row->note),"takes over from %s (row %d)",ROOM_KIND[clamp(a->room_slot_kind[k],0,3)],k+1);break;}
+            }
+        }
     } else if(a->menu_kind==MENU_ROLE){
         Session *s=session(a,a->menu_target);
         const char *roles[3]={"worker","reviewer","lead"};
@@ -3354,6 +3472,51 @@ static const lj_block LJ_BLOCKS[]={
 };
 #define LJ_BLOCK_COUNT ((int)(sizeof(LJ_BLOCKS)/sizeof(LJ_BLOCKS[0])))
 static void draw_gallery(App *a);
+/* The lead-rules editor: one single-line field per rule, scrolled to the
+ * selected one. It sits over the NEW ROOM form and owns every hit while open. */
+static void rules_render(App *a,int w){
+    a->nhits=0;
+    int rowh=CELLH,pad=CELLW;
+    int fit=clamp(a->h/CELLH-8,3,RULES_MAX);int shown=a->nrules<fit?a->nrules:fit;
+    int h=(shown+5)*rowh;
+    lj_rect m={((a->w-w)/2)/CELLW*CELLW,((a->h-h)/2)/CELLH*CELLH,w,h};
+    panel(m,PANEL,0);if(!render_ansi)panel((lj_rect){m.x+1,m.y+1,m.w-2,m.h-2},PANEL,11);
+    border(m,GREEN);
+    int lx=m.x+pad,fw=w-2*pad-5*CELLW;
+    text(lx,m.y,a->rules_loading?"LEAD RULES · loading\u2026":"LEAD RULES · every new room and agent prompt carries these",GREEN,w-2*pad);
+    if(a->rules_sel<a->rules_scroll)a->rules_scroll=a->rules_sel;
+    if(a->rules_sel>=a->rules_scroll+shown)a->rules_scroll=a->rules_sel-shown+1;
+    a->rules_scroll=clamp(a->rules_scroll,0,a->nrules>shown?a->nrules-shown:0);
+    int y=m.y+rowh;
+    for(int r=0;r<shown;r++){
+        int i=a->rules_scroll+r;if(i>=a->nrules)break;
+        int on=i==a->rules_sel;
+        char num[8];snprintf(num,sizeof num,"%2d",i+1);text(lx,y,num,on?GREEN:DIM,3*CELLW);
+        lj_rect box={lx+3*CELLW,y,fw-3*CELLW,rowh};
+        panel(box,on?SURF2:BG,0);if(on)border(box,GREEN);
+        const char *val=a->lead_rules[i],*shown_text=val[0]?val:"(empty rule · type it, or ✕ to remove)";
+        int cells=(box.w-CELLW)/CELLW;
+        if(val[0]&&cells>1){
+            int len=0;for(const char *q=val;*q;)len+=lj_render_cells_measure(nextcp(&q));
+            /* the selected rule shows its TAIL (where you type); the others their head */
+            if(len>cells&&on){const char *q=val;int skip=len-(cells-1);
+                while(*q&&skip>0)skip-=lj_render_cells_measure(nextcp(&q));
+                static char tail[RULE_CAP+8];snprintf(tail,sizeof tail,"…%s",q);shown_text=tail;}
+        }
+        text(box.x+CELLW/2,y,shown_text,val[0]?TEXT:DIM,box.w-CELLW);
+        hit(a,box,H_RULE_ROW,i,NULL);
+        button(a,(lj_rect){box.x+box.w+CELLW,y,3*CELLW,rowh},"✕",H_RULE_DEL,i,NULL,0);
+        y+=rowh;
+    }
+    if(a->nrules>shown){char more[64];snprintf(more,sizeof more,"rules %d-%d of %d · ↑↓ to move",a->rules_scroll+1,a->rules_scroll+shown,a->nrules);text(lx,y,more,DIM,w-2*pad);}
+    y+=rowh;
+    text(lx,y,"type to edit · Enter adds a rule below · Ctrl+S saves · Esc cancels",DIM,w-2*pad);
+    y+=rowh;
+    button(a,(lj_rect){lx,y,12*CELLW,rowh},"+ ADD RULE",H_RULE_ADD,0,NULL,0);
+    button(a,(lj_rect){lx+13*CELLW,y,11*CELLW,rowh},"DEFAULTS",H_RULES_DEFAULTS,0,NULL,0);
+    button(a,(lj_rect){m.x+w-pad-22*CELLW,y,9*CELLW,rowh},"CANCEL",H_RULES_CANCEL,0,NULL,0);
+    button(a,(lj_rect){m.x+w-pad-12*CELLW,y,12*CELLW,rowh},"SAVE",H_RULES_SAVE,0,NULL,1);
+}
 static void render(App *a){
     scrollbar_frame++;
     /* Resolve hover BEFORE the hit list is cleared: last frame's rects are what
@@ -3750,12 +3913,14 @@ static void render(App *a){
         a->nhits=0;
         int rowh=CELLH,pad=CELLW;
         int w=clamp(a->w-8*CELLW,40*CELLW,90*CELLW);
-        /* Each agent+role needs 17 cells plus its button padding and gap.
-         * Use more rows when necessary; never clip a role into another word. */
+        /* One agent row = kind dropdown (13) + role dropdown (13) + remove (3)
+         * + gaps: 32 cells. Two columns when they fit, else one; never clip a
+         * role into another word. The ADD button takes the next free cell. */
         int agent_space=w-2*pad-11*CELLW;
-        int agent_cols=agent_space>=4*19*CELLW?4:agent_space>=2*19*CELLW?2:1;
-        int agent_rows=(4+agent_cols-1)/agent_cols;
-        int h=(14+agent_rows)*rowh;
+        int agent_cols=agent_space>=2*33*CELLW?2:1;
+        int agent_items=a->room_nslot+(a->room_nslot<ROOM_SLOTS);
+        int agent_rows=(agent_items+agent_cols-1)/agent_cols;
+        int h=(13+agent_rows)*rowh;
         lj_rect modal={((a->w-w)/2)/CELLW*CELLW,((a->h-h)/2)/CELLH*CELLH,w,h};
         panel(modal,PANEL,0);if(!render_ansi)panel((lj_rect){modal.x+1,modal.y+1,modal.w-2,modal.h-2},PANEL,11);
         border(modal,EDGE);
@@ -3801,25 +3966,39 @@ static void render(App *a){
         }
         y+=rowh;
         text(lx,y,"AGENTS",CYAN,11*CELLW);
-        const char *kinds[4]={"CLAUDE","CODEX","DEEPSEEK","SHELL"};
-        const char *rtag[4]={"— off —","WORKER","REVIEWER","LEAD"};
         int aw=(fw/agent_cols)/CELLW*CELLW;
-        for(int i=0;i<4;i++){
-            lj_rect cell={fx+(i%agent_cols)*aw,y+(i/agent_cols)*rowh,aw-CELLW,rowh};
-            int r=a->room_agent[i];
-            panel(cell,r?SURF2:BG,0);
-            char one[64];snprintf(one,sizeof(one),"%s %s",kinds[i],rtag[r]);
-            text(cell.x+CELLW/2,cell.y,one,r==3?GREEN:r?TEXT:DIM,cell.w-CELLW);
-            hit(a,cell,H_ROOM_AGENT,i,NULL);
+        for(int i=0;i<agent_items;i++){
+            int cx=fx+(i%agent_cols)*aw,cy=y+(i/agent_cols)*rowh;
+            if(i==a->room_nslot){button(a,(lj_rect){cx,cy,15*CELLW,rowh},"+ ADD AGENT",H_ROOM_SLOT_ADD,0,NULL,0);continue;}
+            char one[48],tag[16];snprintf(tag,sizeof tag,"%d",i);
+            int kind=clamp(a->room_slot_kind[i],0,3),role=clamp(a->room_slot_role[i],1,3);
+            snprintf(one,sizeof one,"%s \u25be",ROOM_KIND_LABEL[kind]);
+            button(a,(lj_rect){cx,cy,13*CELLW,rowh},one,H_ROOM_AGENT,i,NULL,
+                   a->menu_kind==MENU_SLOT_KIND&&!strcmp(a->menu_target,tag));
+            snprintf(one,sizeof one,"%s \u25be",ROLE_LABEL[role]);
+            button(a,(lj_rect){cx+14*CELLW,cy,13*CELLW,rowh},one,H_ROOM_SLOT_ROLE,i,NULL,
+                   role==3||(a->menu_kind==MENU_SLOT_ROLE&&!strcmp(a->menu_target,tag)));
+            if(a->room_nslot>1)button(a,(lj_rect){cx+28*CELLW,cy,3*CELLW,rowh},"\u2715",H_ROOM_SLOT_DEL,i,NULL,0);
         }
         y+=agent_rows*rowh;
-        text(lx,y,room_lead_count(a)==1?"click an agent to cycle off · worker · reviewer · lead"
-                                       :"pick exactly ONE lead — the lead owns every todo in the room",
-             room_lead_count(a)==1?DIM:AMBER,w-2*pad);
+        {   int workers=0;for(int i=0;i<a->room_nslot;i++)workers+=a->room_slot_role[i]!=3;
+            char line[160];
+            if(room_lead_count(a)==1)snprintf(line,sizeof line,"%d agent%s · 1 lead + %d · pick kind and role from each dropdown",
+                                              a->room_nslot,a->room_nslot==1?"":"s",workers);
+            else copy(line,sizeof line,"pick exactly ONE lead — the lead owns every todo in the room");
+            text(lx,y,line,room_lead_count(a)==1?DIM:AMBER,w-2*pad);
+        }
+        y+=rowh;
+        text(lx,y,"RULES",CYAN,11*CELLW);
+        {   char line[96];snprintf(line,sizeof line,"%d lead rule%s%s",a->nrules,a->nrules==1?"":"s",a->rules_custom?" · edited":a->nrules?" · defaults":"");
+            text(fx,y,a->nrules?line:"the standing lead rules every agent in the room follows",DIM,fw-16*CELLW);
+            button(a,(lj_rect){fx+fw-15*CELLW,y,15*CELLW,rowh},"EDIT RULES",H_ROOM_RULES,0,NULL,a->rules_dialog);
+        }
         y+=rowh;
         button(a,(lj_rect){modal.x+w-pad-22*CELLW,y,9*CELLW,rowh},"CANCEL",H_ROOM_CANCEL,0,NULL,0);
         button(a,(lj_rect){modal.x+w-pad-12*CELLW,y,12*CELLW,rowh},a->room_starting?"CREATING\u2026":"CREATE",H_ROOM_CREATE,0,NULL,!a->room_starting);
         folder_browser_render(a);
+        if(a->rules_dialog)rules_render(a,w);
     }
     int ribbon_moving=fullscreen?0:draw_ribbon(a,0);
     if(a->dragging){
@@ -3973,6 +4152,10 @@ static void activate(App *a,Hit *h){
             Hit forward={.kind=action,.index=index,.r=h->r};forward.id[0]=0;
             activate(a,&forward);return;
         }
+        if(kind==MENU_SLOT_KIND&&action==H_ROOM_AGENT){
+            int i=atoi(target);if(i>=0&&i<a->room_nslot)a->room_slot_kind[i]=clamp(index,0,3);a->dirty=1;return;
+        }
+        if(kind==MENU_SLOT_ROLE&&action==H_ROOM_SLOT_ROLE){room_slot_set_role(a,atoi(target),index);return;}
         if(kind==MENU_ROLE&&action==H_ROLE){
             Session *s=session(a,target);if(!s)return;
             const char *roles[3]={"worker","reviewer","lead"};
@@ -4095,10 +4278,27 @@ static void activate(App *a,Hit *h){
     else if(h->kind==H_FB_PATH){if(!a->fb_edit){a->fb_edit=1;copy(a->fb_typed,sizeof a->fb_typed,a->room_folder_base);}}
     else if(h->kind==H_FB_CANCEL||h->kind==H_FB_CLOSE)folder_browser_close(a);
     else if(h->kind==H_ROOM_FOLDER_USE)folder_browser_use(a);
-    else if(h->kind==H_ROOM_AGENT){int i=clamp(h->index,0,3);
-        a->room_agent[i]=(a->room_agent[i]+1)%4;
-        /* Exactly one lead: promoting one demotes the previous. */
-        if(a->room_agent[i]==3)for(int k=0;k<4;k++)if(k!=i&&a->room_agent[k]==3)a->room_agent[k]=1;
+    else if(h->kind==H_ROOM_AGENT||h->kind==H_ROOM_SLOT_ROLE){
+        /* A dropdown, not click-to-rotate (the operator 2026-10-24). */
+        int menu=h->kind==H_ROOM_AGENT?MENU_SLOT_KIND:MENU_SLOT_ROLE;char tag[16];snprintf(tag,sizeof tag,"%d",h->index);
+        if(a->menu_kind==menu&&!strcmp(a->menu_target,tag))menu_close(a);else menu_open(a,menu,h->r,tag);
+    }
+    else if(h->kind==H_ROOM_SLOT_DEL){menu_close(a);room_slot_remove(a,h->index);}
+    else if(h->kind==H_ROOM_SLOT_ADD){
+        /* A new row repeats the last kind as a worker: adding several codex or
+         * deepseek workers is the common case this exists for. */
+        int last=a->room_nslot?a->room_slot_kind[a->room_nslot-1]:1;room_slot_add(a,last,1);
+    }
+    else if(h->kind==H_ROOM_RULES){menu_close(a);rules_open(a);}
+    else if(h->kind==H_RULE_ROW){a->rules_sel=clamp(h->index,0,a->nrules-1);}
+    else if(h->kind==H_RULE_DEL){rules_delete(a,h->index);}
+    else if(h->kind==H_RULE_ADD){rules_insert(a,a->nrules);}
+    else if(h->kind==H_RULES_SAVE){rules_close(a,1);}
+    else if(h->kind==H_RULES_CANCEL){rules_close(a,0);}
+    else if(h->kind==H_RULES_DEFAULTS){
+        if(!a->nrule_defaults){toast(a,"Defaults not loaded yet");return;}
+        rules_copy(a->lead_rules,&a->nrules,a->rule_defaults,a->nrule_defaults);a->rules_sel=0;
+        toast(a,"Defaults restored · SAVE to keep them");
     }
     else if(h->kind==H_ROOM_CANCEL)a->room_dialog=0;
     else if(h->kind==H_ROOM_CREATE)create_room(a);
@@ -4107,7 +4307,16 @@ static void activate(App *a,Hit *h){
     else if(h->kind==H_ROLE||h->kind==H_PARENT){
         Session *s=session(a,h->id);if(!s)return;json_object *o=json_object_new_object();jadd(o,"action","assign");jadd(o,"session",s->id);
         const char *role=s->role,*parent=s->parent;
-        if(h->kind==H_ROLE)role=!strcmp(role,"worker")?"reviewer":!strcmp(role,"reviewer")?"lead":"worker";
+        if(h->kind==H_ROLE){
+            /* ⚠ A DROPDOWN, NOT CLICK-TO-ROTATE (the operator 2026-10-24). One click
+             * used to reassign the live agent to the next role at once — a lead
+             * could be demoted by a stray click. Open the same ROLE menu the tile
+             * uses; it marks a lead handover before you pick it. */
+            json_object_put(o);int team=a->team;
+            if(a->menu_kind==MENU_ROLE&&!strcmp(a->menu_target,s->id))menu_close(a);
+            else {menu_open(a,MENU_ROLE,h->r,s->id);a->team=team;a->menu_team=team;}
+            a->dirty=1;return;
+        }
         else {int found=!parent[0];const char *next="";for(int i=0;i<a->norder;i++){Session *p=&a->sessions[a->order[i]];if(strcmp(p->role,"lead")||p==s)continue;if(found){next=p->id;break;}if(!strcmp(p->id,parent))found=1;}parent=next;}
         jadd(o,"role",role);jadd(o,"parent",parent);request(a,o);
     }a->dirty=1;
@@ -4193,7 +4402,7 @@ static void visual_ingest(App *a,const char *value){
 }
 static void input_paste(App *a,const char *value,int brackets){
     if(a->copy_pause||a->about_open||a->settings_open)return;
-    if(a->room_dialog){room_name_input(a,value);return;}
+    if(a->room_dialog){if(a->rules_dialog)rules_input(a,value);else room_name_input(a,value);return;}
     if(a->team||a->status_open)return;
     char path[PATH_MAX];if((!strcmp(a->focus,"canvas")||!strcmp(a->focus,"room"))&&visual_path(value,path,sizeof path)){
         visual_ingest(a,path);return;
@@ -4277,6 +4486,17 @@ static void key(App *a,SDL_KeyboardEvent *e){
         a->dirty=1;return;
     }
     if((ctrl&&k==SDLK_v)||(shift&&k==SDLK_INSERT)){clipboard_paste(a);return;}
+    if(a->room_dialog&&a->rules_dialog){
+        if(k==SDLK_ESCAPE)rules_close(a,0);
+        else if(ctrl&&k==SDLK_s)rules_close(a,1);
+        else if(k==SDLK_RETURN||k==SDLK_KP_ENTER)rules_insert(a,a->rules_sel+1);
+        else if(k==SDLK_TAB||k==SDLK_DOWN)a->rules_sel=(a->rules_sel+(k==SDLK_TAB&&shift?a->nrules-1:1))%a->nrules;
+        else if(k==SDLK_UP)a->rules_sel=(a->rules_sel+a->nrules-1)%a->nrules;
+        else if(k==SDLK_BACKSPACE)rules_backspace(a);
+        else if(k==SDLK_DELETE&&ctrl)rules_delete(a,a->rules_sel);
+        else if(ctrl&&k==SDLK_u)a->lead_rules[a->rules_sel][0]=0;
+        a->dirty=1;return;
+    }
     if(a->room_dialog){
         if(folder_browser_key(a,k,ctrl))return;
         if(ctrl&&k==SDLK_o){folder_browser_open(a);return;}
@@ -4465,7 +4685,7 @@ static void event(App *a,SDL_Event *e){
         }
     }
     if(e->type==SDL_TEXTINPUT&&a->settings_open){settings_text(a,e->text.text);return;}   /* the theme editor owns typed text (hex entry); nothing reaches a tile */
-    if(e->type==SDL_TEXTINPUT&&!a->team&&!a->status_open){if(a->room_dialog){room_name_input(a,e->text.text);return;}if(!strcmp(a->focus,"room")){if(message_input(a))add_draft(a,e->text.text);return;}else {Session *s=session(a,a->focus);if(s){if(modifiers()&KMOD_ALT)send_bytes(a,s,"\033",1);send_bytes(a,s,e->text.text,strlen(e->text.text));}}return;}
+    if(e->type==SDL_TEXTINPUT&&!a->team&&!a->status_open){if(a->room_dialog){if(a->rules_dialog)rules_input(a,e->text.text);else room_name_input(a,e->text.text);return;}if(!strcmp(a->focus,"room")){if(message_input(a))add_draft(a,e->text.text);return;}else {Session *s=session(a,a->focus);if(s){if(modifiers()&KMOD_ALT)send_bytes(a,s,"\033",1);send_bytes(a,s,e->text.text,strlen(e->text.text));}}return;}
     if(e->type==SDL_MOUSEMOTION){int prior=-1,next=-1;for(int i=0;i<a->dock.divider_count;i++){if(inside(hitrect(a->dock.dividers[i].rect),a->mousex,a->mousey))prior=i;if(inside(hitrect(a->dock.dividers[i].rect),e->motion.x,e->motion.y))next=i;}if(prior!=next&&!a->team&&!a->status_open&&!a->room_dialog&&!a->about_open)a->dirty=1;
         if(e->motion.x/CELLW!=a->mousex/CELLW||e->motion.y/CELLH!=a->mousey/CELLH)a->dirty=1;  /* hover follows the pointer */
         a->mousex=e->motion.x;a->mousey=e->motion.y;if(a->team||a->status_open||a->room_dialog||a->about_open||a->settings_open)return;

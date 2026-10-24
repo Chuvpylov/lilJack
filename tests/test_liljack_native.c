@@ -368,6 +368,15 @@ int main(void) {
     render(a);click_hit(H_MENU_SCRIM,NULL);CHECK(a->menu_kind==MENU_NONE);
     render(a);click_toolbar(H_TEAM);CHECK(a->team);render(a);
     CHECK(get_hit(H_LEAD,"demo-0").kind==H_LEAD);
+    /* ⚠ THE TEAM ROLE CHIP IS A DROPDOWN (the operator 2026-10-24: "worker role should
+     * be dropdown not click to rotate"). One click used to move the live agent
+     * to the next role at once. Now it opens the ROLE menu over the panel and
+     * changes nothing until a row is picked; dismissing it keeps the panel. */
+    {   Session *d0=session(a,"demo-0");char was_role[16];copy(was_role,sizeof was_role,d0->role);
+        click_hit(H_ROLE,"demo-0");
+        CHECK(!strcmp(d0->role,was_role));CHECK(a->menu_kind==MENU_ROLE);CHECK(!strcmp(a->menu_target,"demo-0"));CHECK(a->team);
+        render(a);click_hit(H_MENU_SCRIM,NULL);CHECK(a->menu_kind==MENU_NONE);CHECK(a->team);render(a);
+    }
     Hit stop={0};for(int i=0;i<a->nhits;i++)if(a->hits[i].kind==H_CONTROL&&a->hits[i].index==2&&!strcmp(a->hits[i].id,"demo-0"))stop=a->hits[i];CHECK(stop.kind==H_CONTROL);
     activate(a,&stop);CHECK(!strcmp(a->stop_confirm,"demo-0"));render(a);
     activate(a,&stop);CHECK(!a->stop_confirm[0]);render(a);
@@ -415,21 +424,61 @@ int main(void) {
     type_text("first task");CHECK(!strcmp(a->room_todo[0],"first task"));
     CHECK(!strcmp(a->room_name,"Review room"));         /* the earlier field is untouched */
     press(SDLK_BACKSPACE);CHECK(!strcmp(a->room_todo[0],"first tas"));
-    /* Cycling an agent: off, worker, reviewer, lead. Promoting a second lead
-     * demotes the first, because room_start refuses two and the form must not
-     * be able to build a request the backend will reject. */
+    /* ⚠ AGENTS ARE ROWS WITH DROPDOWNS (the operator 2026-10-24: "select more then 3
+     * workers and worker role should be dropdown not click to rotate"). The
+     * form opens with claude lead, codex worker, deepseek reviewer. Clicking a
+     * role opens a menu and changes nothing; picking LEAD demotes the old lead,
+     * because room_start refuses two. */
     render(a);
-    int was=a->room_agent[1];
-    click_hit(H_ROOM_AGENT,NULL);                       /* index 0 = claude, the lead */
-    CHECK(a->room_agent[0]==0);CHECK(a->room_agent[1]==was);
-    CHECK(room_lead_count(a)==0);
+    CHECK(a->room_nslot==3);CHECK(a->room_slot_role[0]==3&&a->room_slot_role[1]==1&&a->room_slot_role[2]==2);
+    {Hit r1=get_hit_index(H_ROOM_SLOT_ROLE,1);mouse_event(SDL_MOUSEBUTTONDOWN,r1.r.x+4,r1.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,r1.r.x+4,r1.r.y+4);}
+    CHECK(a->room_slot_role[1]==1);CHECK(a->menu_kind==MENU_SLOT_ROLE);CHECK(!strcmp(a->menu_target,"1"));
+    {   MenuRow rows[16];int n=menu_rows(a,rows,16),lead=-1;
+        for(int i=0;i<n;i++)if(rows[i].action==H_ROOM_SLOT_ROLE&&rows[i].index==3)lead=i;
+        CHECK(n==3);CHECK(lead==2);CHECK(strstr(rows[lead].note,"claude")!=NULL);   /* says whose lead it takes */
+        render(a);Hit m=get_hit_index(H_MENU_ITEM,lead);mouse_event(SDL_MOUSEBUTTONDOWN,m.r.x+4,m.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,m.r.x+4,m.r.y+4);
+    }
+    CHECK(a->menu_kind==MENU_NONE);CHECK(a->room_slot_role[1]==3);CHECK(a->room_slot_role[0]==1);CHECK(room_lead_count(a)==1);
+    /* + ADD AGENT repeats the last kind as a worker, up to eight rows. */
+    for(int c=0;c<5;c++){render(a);click_hit(H_ROOM_SLOT_ADD,NULL);}
+    CHECK(a->room_nslot==8);
+    render(a);{int add=0;for(int i=0;i<a->nhits;i++)add+=a->hits[i].kind==H_ROOM_SLOT_ADD;CHECK(add==0);}
+    /* The kind is a dropdown too: make rows 3..7 codex, so five codex workers. */
+    for(int r=3;r<8;r++){
+        render(a);{Hit k=get_hit_index(H_ROOM_AGENT,r);mouse_event(SDL_MOUSEBUTTONDOWN,k.r.x+4,k.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,k.r.x+4,k.r.y+4);}
+        CHECK(a->menu_kind==MENU_SLOT_KIND);
+        render(a);{Hit m=get_hit_index(H_MENU_ITEM,1);mouse_event(SDL_MOUSEBUTTONDOWN,m.r.x+4,m.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,m.r.x+4,m.r.y+4);}
+        CHECK(a->room_slot_kind[r]==1);
+    }
+    {int codex_workers=0;for(int i=0;i<a->room_nslot;i++)codex_workers+=a->room_slot_kind[i]==1&&a->room_slot_role[i]==1;CHECK(codex_workers==5);}
+    /* ✕ removes a row; the lead row going leaves no lead, and CREATE refuses. */
+    render(a);{Hit d=get_hit_index(H_ROOM_SLOT_DEL,1);mouse_event(SDL_MOUSEBUTTONDOWN,d.r.x+4,d.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,d.r.x+4,d.r.y+4);}
+    CHECK(a->room_nslot==7);CHECK(room_lead_count(a)==0);
     render(a);click_hit(H_ROOM_CREATE,NULL);            /* no lead: refused, form stays */
     CHECK(a->room_dialog);CHECK(a->nroom==2);
-    a->room_agent[2]=3;CHECK(room_lead_count(a)==1);    /* deepseek leads */
-    /* Cycle claude off -> worker -> reviewer -> lead. The last step must demote
-     * deepseek, leaving exactly one lead. */
-    for(int c=0;c<3;c++){render(a);click_hit(H_ROOM_AGENT,NULL);}
-    CHECK(a->room_agent[0]==3);CHECK(a->room_agent[2]!=3);CHECK(room_lead_count(a)==1);
+    room_slot_set_role(a,0,3);CHECK(room_lead_count(a)==1);   /* claude leads again */
+    /* ⚠ THE RULES ARE EDITABLE (the operator 2026-10-24: "edit rules"). EDIT RULES
+     * opens the list over the form; typing edits the selected rule, Enter adds
+     * one below, ✕ removes, Ctrl+S saves, Esc restores what was there. */
+    render(a);click_hit(H_ROOM_RULES,NULL);CHECK(a->rules_dialog);CHECK(a->nrules==1);
+    type_text("rule A");press(SDLK_RETURN);type_text("rule B");
+    CHECK(a->nrules==2);CHECK(!strcmp(a->lead_rules[0],"rule A"));CHECK(!strcmp(a->lead_rules[1],"rule B"));
+    CHECK(!strcmp(a->room_name,"Review room"));         /* the form fields are untouched */
+    {SDL_KeyboardEvent save={0};save.keysym.sym=SDLK_s;save.keysym.mod=KMOD_LCTRL;key(a,&save);}
+    CHECK(!a->rules_dialog);CHECK(a->nrules==2);CHECK(a->rules_custom);
+    render(a);click_hit(H_ROOM_RULES,NULL);CHECK(a->rules_dialog);
+    render(a);{Hit d=get_hit_index(H_RULE_DEL,0);mouse_event(SDL_MOUSEBUTTONDOWN,d.r.x+4,d.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,d.r.x+4,d.r.y+4);}
+    CHECK(a->nrules==1);CHECK(!strcmp(a->lead_rules[0],"rule B"));
+    press(SDLK_ESCAPE);CHECK(!a->rules_dialog);CHECK(a->room_dialog);
+    CHECK(a->nrules==2);CHECK(!strcmp(a->lead_rules[0],"rule A"));   /* Esc restored the saved list */
+    const char *form_shot=getenv("LILJACK_ROOM_FORM_SCREENSHOT");if(form_shot){
+        /* lj_render_save_png writes the last PRESENTED frame; the pixels are read directly. */
+        char path[512];render(a);snprintf(path,sizeof path,"%s-form.png",form_shot);CHECK(lj_render_save_png_region(path,0,0,a->w,a->h,1)==0);
+        click_hit(H_ROOM_RULES,NULL);render(a);snprintf(path,sizeof path,"%s-rules.png",form_shot);CHECK(lj_render_save_png_region(path,0,0,a->w,a->h,1)==0);
+        press(SDLK_ESCAPE);
+        render(a);{Hit r=get_hit_index(H_ROOM_SLOT_ROLE,2);mouse_event(SDL_MOUSEBUTTONDOWN,r.r.x+4,r.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,r.r.x+4,r.r.y+4);}
+        render(a);snprintf(path,sizeof path,"%s-role-menu.png",form_shot);CHECK(lj_render_save_png_region(path,0,0,a->w,a->h,1)==0);
+        menu_close(a);render(a);}
     render(a);press(SDLK_RETURN);
     CHECK(!a->room_dialog&&a->nroom==3);CHECK(!strcmp(a->active_room,"r-demo-3"));
     switch_workspace(a,"r-demo-build");render(a);
