@@ -1847,16 +1847,31 @@ def _mirror_rows(rows, board_path=None) -> dict:
     "when this task last actually moved".
     """
     out = {"updated": 0, "negated": 0, "skipped": 0}
-    current = {}
+    current, negated = {}, set()
     try:
-        for it in board.read(Path(board_path) if board_path else board.default_path())["items"]:
+        have_board = board.read(Path(board_path) if board_path else board.default_path())
+        for it in have_board["items"]:
             current[(it["agent"], it["task"])] = it
+        negated = {tuple(n["args"][:2]) for n in have_board["negs"] if n["pred"] == board.PRED_TASK}
     except Exception:
-        current = {}          # unreadable board -> write everything, as before
+        current, negated = {}, set()   # unreadable board -> write everything, as before
+    # ⚠ THE BOARD KEYS ON slug(id)[:60]. "x…-or-few" and "x…-or-few-2" clip to
+    # one board row, so an abandoned "-2" twin negated (deleted) the live row and
+    # the next save upserted it back — four rows rewritten on every write. A
+    # row that is not abandoned owns its board key.
+    claimed = {(t["owner"], board.slug(t["id"])) for t in rows if t["state"] != "abandoned"}
     for t in rows:
         if not t["owner"] or t["owner"] not in board.AGENTS:
             continue
         if t["state"] == "abandoned":
+            # ⚠ NEGATE ONCE. Each negate() is a full board lock+parse+write, and
+            # this runs under the REGISTRY lock on every save: 114 abandoned rows
+            # cost 20-30 s per write (2026-10-26), and room_start's todo seed
+            # timed out behind it ("board locked by another writer").
+            key = (t["owner"], board.slug(t["id"]))
+            if key in claimed or (key in negated and key not in current):
+                out["skipped"] += 1
+                continue
             board.negate(t["owner"], t["id"], _note(f"abandoned: {t['note']}"),
                          path=board_path)
             out["negated"] += 1
@@ -1864,7 +1879,7 @@ def _mirror_rows(rows, board_path=None) -> dict:
         want_state = _BOARD_STATE.get(t["state"], "queued")
         want_progress = t["progress"] or None
         want_note = (t["note"] or t["title"] or None)
-        have = current.get((t["owner"], t["id"]))
+        have = current.get((t["owner"], board.slug(t["id"])))
         # ⚠ COMPARE WHAT THE BOARD WILL ACTUALLY STORE. upsert strips and clips
         # both fields, so comparing the registry's full text against the board's
         # clipped copy never matches and every long-noted row is rewritten on

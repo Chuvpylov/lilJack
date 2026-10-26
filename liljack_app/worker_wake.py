@@ -605,7 +605,10 @@ def context_line(room: str) -> str:
     room = (room or "").strip()
     if not room:
         return ""
-    from .room_instructions import room_command   # the wrapper path, not `python3 -m` (G1)
+    # ⚠ PACKAGE IMPORT, NOT RELATIVE. The heartbeat loads this file top-level
+    # (sys.path += liljack_app), where `from .room_instructions` raises
+    # ImportError — every live worker tick failed that way from e7281f7 on.
+    from liljack_app.room_instructions import room_command   # the wrapper path, not `python3 -m` (G1)
     return f" Room {room} — re-read context: " + room_command("$LILJACK_WORKSPACE_PROJECT", room)
 
 

@@ -1007,6 +1007,36 @@ def main():
         check(T.sync_board()["updated"] == 0 or True, "a real change still reaches the board")
         row = next(i for i in _B3.read(pb5)["items"] if i["task"] == "mirror-idem")
         check(row["progress"] == "moved", "the board followed the real change")
+        # ⚠ AN ABANDONED ROW IS NEGATED ONCE, NOT ON EVERY WRITE. The mirror
+        # re-ran board.negate() — a full board lock+parse+write — for every
+        # abandoned row on every registry save, all under the registry lock.
+        # Measured 2026-10-26: 114 abandoned rows, 20-30 s per task write, so
+        # room_start's todo seed (10 s LOCK_WAIT) failed: "board locked by
+        # another writer" and the room CREATE came back failed.
+        for k in range(3):
+            T.propose(f"gone {k}", by="claude", owner="claude", task_id=f"gone-{k}")
+            T.abandon(f"gone-{k}", by="claude", note="dropped")
+        negs_before = [dict(n) for n in _B3.read(pb5)["negs"]]
+        check(len([n for n in negs_before if n["args"][1].startswith("gone-")]) == 3,
+              "each abandoned row is negated on the board")
+        quiet = T.sync_board()
+        check(quiet["negated"] == 0,
+              "an abandoned row already negated is not negated again (was: every save)")
+        check(_B3.read(pb5)["negs"] == negs_before,
+              "...so the board's negations, and their timestamps, do not move")
+        # ⚠ the board clips task keys to 60 chars: an abandoned "<60 chars>-2"
+        # twin must not delete its live namesake, or every save re-adds it.
+        base = "p" * 60
+        T.propose("live twin", by="claude", owner="claude", task_id=base)
+        T.complete(base, by="claude")
+        T.propose("dead twin", by="claude", owner="claude", task_id=base + "-2")
+        T.abandon(base + "-2", by="claude", note="dup")
+        T.sync_board()
+        twin = T.sync_board()
+        check(twin["updated"] == 0 and twin["negated"] == 0,
+              "a clipped-key twin converges: nothing rewritten on the next save")
+        check(any(i["task"] == base for i in _B3.read(pb5)["items"]),
+              "...and the live row stays on the board")
     finally:
         for k, v in (("LILJACK_TASKS", old_t5), ("LILJACK_BOARD", old_b5)):
             os.environ.pop(k, None)
