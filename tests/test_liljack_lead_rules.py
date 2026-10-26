@@ -59,5 +59,45 @@ check(got['lead_rules']['rules'] == ['only rule'] and L.load() == ['only rule'],
 got = b.request({'action': 'rules_reset'})
 check(got['lead_rules']['rules'] == list(L.DEFAULTS) and not L.is_custom(), 'rules_reset removes the file')
 
+# ⚠ CONTEXT AND INTRO ARE EDITABLE TOO (the operator, 2026-10-26: "all the agent rules
+# and context and initial message should be editable in a menu and when
+# creating as a button"). Same editor, a `section` on the same actions.
+rules_file = Path(os.environ['LILJACK_RULES_PATH'])
+check(L.load('context') == list(L.CONTEXT_DEFAULTS) and L.load('intro') == list(L.INTRO_DEFAULTS),
+      'no files: context and intro are their defaults')
+check(R._onboarding_lines()[1:-1] == ['- ' + r for r in L.CONTEXT_DEFAULTS],
+      'the standing set is the context section, framed by its fixed header and closing line')
+got = b.request({'action': 'rules_set', 'section': 'context', 'rules': ['ctx one', 'ctx two']})
+check(got['lead_rules']['section'] == 'context' and got['lead_rules']['rules'] == ['ctx one', 'ctx two'],
+      'rules_set with section=context saves and answers that section')
+check(L.path('context') == rules_file.with_name('agent_context.json') and L.path('context').is_file(),
+      'context is stored beside lead_rules.json')
+check(L.load() == list(L.DEFAULTS), '...and leaves the lead rules alone')
+prompt = R.system_prompt_text('/p', 'r-1').splitlines()
+check(prompt[1:3] == ['- ctx one', '- ctx two'], 'system prompt carries the edited context')
+check(R._onboarding_lines()[0].startswith('STANDING INSTRUCTION SET') and
+      R._onboarding_lines()[-1].startswith('Everything above already exists'), 'header and closing line stay')
+got = b.request({'action': 'rules_get', 'section': 'intro'})
+check(got['lead_rules']['rules'] == list(L.INTRO_DEFAULTS) and not got['lead_rules']['custom']
+      and got['lead_rules']['defaults'] == list(L.INTRO_DEFAULTS), 'rules_get serves the intro section')
+b.request({'action': 'rules_set', 'section': 'intro', 'rules': ['Say hello to the lead first.']})
+_ctx = {'room': {'name': 'n', 'purpose': 'p', 'folder': '/f', 'phase': 'WORK'}, 'role': 'worker',
+        'last_seq': 1, 'cursor': 2, 'members': [], 'todo': [], 'other_rooms': []}
+_orig = R.room_context
+R.room_context = lambda *a, **k: _ctx
+try:
+    intro = R.intro_text(type('S', (), {'root': Path(tmp)})(), '/p', 'r-1', 's-1').splitlines()
+finally:
+    R.room_context = _orig
+check('Say hello to the lead first.' in intro and L.INTRO_DEFAULTS[0] not in intro,
+      'the initial message carries the edited intro lines instead of the defaults')
+check('- ctx one' in intro, 'the initial message carries the edited context')
+got = b.request({'action': 'rules_reset', 'section': 'intro'})
+check(got['lead_rules']['rules'] == list(L.INTRO_DEFAULTS) and not L.is_custom('intro'), 'rules_reset per section')
+try:
+    L.load('nope'); check(False, 'refuses an unknown section')
+except ValueError:
+    check(True, 'refuses an unknown section')
+
 print(f'\n{passed} passed, {failed} failed')
 sys.exit(1 if failed else 0)

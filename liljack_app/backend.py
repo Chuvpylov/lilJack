@@ -342,11 +342,12 @@ class Backend:
             return {**self.snapshot(), 'created_room': room['id']}
         if action in ('rules_get', 'rules_set', 'rules_reset'):
             from . import lead_rules
+            section = req.get('section') or 'rules'
             if action == 'rules_set':
-                lead_rules.save(req.get('rules'))
+                lead_rules.save(req.get('rules'), section)
             elif action == 'rules_reset':
-                lead_rules.reset()
-            return {**self.snapshot(), 'lead_rules': lead_rules.packet()}
+                lead_rules.reset(section)
+            return {**self.snapshot(), 'lead_rules': lead_rules.packet(section)}
         if action == 'room_start':
             from .room_start import start_room
             result = start_room(self.store, self.tmux, self.project, req, actor='operator')

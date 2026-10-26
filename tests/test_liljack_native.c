@@ -471,6 +471,22 @@ int main(void) {
     CHECK(a->nrules==1);CHECK(!strcmp(a->lead_rules[0],"rule B"));
     press(SDLK_ESCAPE);CHECK(!a->rules_dialog);CHECK(a->room_dialog);
     CHECK(a->nrules==2);CHECK(!strcmp(a->lead_rules[0],"rule A"));   /* Esc restored the saved list */
+    /* ⚠ CONTEXT AND THE INITIAL MESSAGE ARE EDITABLE FROM THE FORM TOO (the operator,
+     * 2026-10-26). CONTEXT opens the same editor on its own section; a tab switch
+     * with unsaved edits is refused; each section keeps what it saved. */
+    render(a);{Hit c=get_hit_index(H_ROOM_RULES,1);mouse_event(SDL_MOUSEBUTTONDOWN,c.r.x+4,c.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,c.r.x+4,c.r.y+4);}
+    CHECK(a->rules_dialog);CHECK(a->rules_section==1);CHECK(a->nrules==1&&!a->lead_rules[0][0]);
+    type_text("ctx line");
+    render(a);{Hit t=get_hit_index(H_RULES_TAB,2);mouse_event(SDL_MOUSEBUTTONDOWN,t.r.x+4,t.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,t.r.x+4,t.r.y+4);}
+    CHECK(a->rules_section==1);CHECK(!strcmp(a->lead_rules[0],"ctx line"));   /* dirty: refused */
+    {SDL_KeyboardEvent save={0};save.keysym.sym=SDLK_s;save.keysym.mod=KMOD_LCTRL;key(a,&save);}
+    CHECK(!a->rules_dialog);CHECK(a->sec_n[1]==1&&!strcmp(a->sec_text[1][0],"ctx line"));CHECK(a->sec_custom[1]);
+    render(a);{Hit c=get_hit_index(H_ROOM_RULES,2);mouse_event(SDL_MOUSEBUTTONDOWN,c.r.x+4,c.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,c.r.x+4,c.r.y+4);}
+    CHECK(a->rules_dialog&&a->rules_section==2);type_text("hello lead");press(SDLK_ESCAPE);
+    CHECK(!a->rules_dialog&&a->sec_n[2]==0);                                  /* Esc saved nothing */
+    render(a);click_hit(H_ROOM_RULES,NULL);CHECK(a->rules_section==0);
+    CHECK(a->nrules==2&&!strcmp(a->lead_rules[0],"rule A"));                 /* the lead rules are untouched */
+    press(SDLK_ESCAPE);CHECK(a->room_dialog);
     const char *form_shot=getenv("LILJACK_ROOM_FORM_SCREENSHOT");if(form_shot){
         /* lj_render_save_png writes the last PRESENTED frame; the pixels are read directly. */
         char path[512];render(a);snprintf(path,sizeof path,"%s-form.png",form_shot);CHECK(lj_render_save_png_region(path,0,0,a->w,a->h,1)==0);
@@ -481,6 +497,14 @@ int main(void) {
         menu_close(a);render(a);}
     render(a);press(SDLK_RETURN);
     CHECK(!a->room_dialog&&a->nroom==3);CHECK(!strcmp(a->active_room,"r-demo-3"));
+    /* The logo menu opens the same editor with no form underneath; typing goes to it. */
+    render(a);click_hit(H_BURGER,NULL);CHECK(a->menu_kind==MENU_LOGO);
+    {MenuRow rows[24];int n=menu_rows(a,rows,24),at=-1;for(int i=0;i<n;i++)if(rows[i].action==H_ROOM_RULES)at=i;CHECK(at>=0);
+     render(a);Hit m=get_hit_index(H_MENU_ITEM,at);mouse_event(SDL_MOUSEBUTTONDOWN,m.r.x+4,m.r.y+4);mouse_event(SDL_MOUSEBUTTONUP,m.r.x+4,m.r.y+4);}
+    CHECK(a->rules_dialog&&!a->room_dialog&&a->rules_section==0);
+    render(a);{int tabs=0;for(int i=0;i<a->nhits;i++)tabs+=a->hits[i].kind==H_RULES_TAB;CHECK(tabs==3);}
+    type_text("x");CHECK(!strcmp(a->lead_rules[0],"rule Ax"));press(SDLK_ESCAPE);
+    CHECK(!a->rules_dialog&&!strcmp(a->lead_rules[0],"rule A"));
     switch_workspace(a,"r-demo-build");render(a);
     /* Actual title drag into another room changes membership, not just geometry. */
     Hit agent_header=get_hit(H_HEADER,"demo-2"),group=get_hit(H_GROUP,"r-demo-research");

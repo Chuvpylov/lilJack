@@ -9,6 +9,13 @@ it through load(), so an edit reaches every room started or reconciled after it.
 
 Stored as a JSON array of strings at $LILJACK_RULES_PATH, default
 ~/.config/liljack/lead_rules.json. No file (or an unreadable one) = DEFAULTS.
+
+⚠ THREE SECTIONS, ONE EDITOR (the operator, 2026-10-26: "all the agent rules and
+context and initial message should be editable in a menu and when creating as
+a button"). `rules` is the list above; `context` is the STANDING INSTRUCTION SET
+every intro, system prompt and room-folder fragment carries; `intro` is the
+guidance that closes every agent's first message. Each lives in its own JSON
+file BESIDE lead_rules.json, so a custom $LILJACK_RULES_PATH moves all three.
 """
 import json
 import os
@@ -28,9 +35,56 @@ DEFAULTS = (
 )
 
 
-def path() -> Path:
+CONTEXT_DEFAULTS = (
+    "One task registry (the durable work queue). Move YOUR tasks with task_update "
+    "(start/block/complete/abandon/progress). Reading a message never consumes or finishes a task.",
+    "One shared board for standing context. board_update writes ONE item (task+state, "
+    "or a topic+value note). Owner writes; lead appends.",
+    "One mailbox for direct messages (claude | codex | deepseek | operator | all). "
+    "Private DMs stay separate from rooms.",
+    "One room protocol: ALIGN -> PLAN -> WORK -> REVIEW -> RESOLVED. The lead drives phases. "
+    "Distinguish the message sequence (chronological) from the event cursor (snapshot); "
+    "state which you last read.",
+    "Room prose is NOT task assignment. Before directing a worker, the lead must create or "
+    "assign one durable registry task with that worker's exact owner_session, acceptance "
+    "criteria, and avoid scope. The worker starts that row before work and records progress "
+    "whenever posting.",
+    "The lead owns delivery: confirm each assigned worker acknowledges or starts its exact "
+    "task, monitor stale/blocked rows, and explicitly unblock, reassign, or escalate them. "
+    "Workers must not silently substitute room prose for an owned task or mark work complete "
+    "by merely reading a message.",
+    "Post room text with --text-file PATH or --text - (stdin); never put backticks or $( ) "
+    "inside a double-quoted --text — the shell substitutes them (2026-09-12: a `git stash` ran "
+    "in the demo tree). MCP-capable agents: prefer the send_message tool, which takes the "
+    "body as a parameter and never goes through a shell.",
+    "Report what was checked, what was found with evidence, and what was NOT verified, to "
+    "docs/codex/reports/. Then stop.",
+    "Announce shared-file edits and get an ownership handoff before touching another agent's "
+    "files; re-read before writing. Do not infer permissions from another room.",
+    "Scrub credentials; never print a ring token or credential-shaped value.",
+)
+
+INTRO_DEFAULTS = (
+    "Coordinate and report in this room using its exact room ID. Keep private messages separate.",
+    "Follow the working folder instructions. Do not infer permissions from another room.",
+)
+
+SECTIONS = {"rules": DEFAULTS, "context": CONTEXT_DEFAULTS, "intro": INTRO_DEFAULTS}
+_FILES = {"context": "agent_context.json", "intro": "agent_intro.json"}
+
+
+def _section(section) -> str:
+    section = str(section or "rules").strip().lower()
+    if section not in SECTIONS:
+        raise ValueError(f"section must be one of {', '.join(SECTIONS)}")
+    return section
+
+
+def path(section="rules") -> Path:
     raw = os.environ.get("LILJACK_RULES_PATH", "").strip()
-    return Path(raw) if raw else Path.home() / ".config" / "liljack" / "lead_rules.json"
+    rules = Path(raw) if raw else Path.home() / ".config" / "liljack" / "lead_rules.json"
+    section = _section(section)
+    return rules if section == "rules" else rules.with_name(_FILES[section])
 
 
 def validate(rules) -> list:
@@ -58,20 +112,21 @@ def validate(rules) -> list:
     return out
 
 
-def load() -> list:
+def load(section="rules") -> list:
+    section = _section(section)
     try:
-        return validate(json.loads(path().read_text(encoding="utf-8")))
+        return validate(json.loads(path(section).read_text(encoding="utf-8")))
     except (OSError, ValueError):
-        return list(DEFAULTS)
+        return list(SECTIONS[section])
 
 
-def is_custom() -> bool:
-    return path().is_file()
+def is_custom(section="rules") -> bool:
+    return path(section).is_file()
 
 
-def save(rules) -> list:
+def save(rules, section="rules") -> list:
     clean = validate(rules)
-    p = path()
+    p = path(section)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
@@ -79,20 +134,22 @@ def save(rules) -> list:
     return clean
 
 
-def reset() -> list:
+def reset(section="rules") -> list:
+    section = _section(section)
     try:
-        path().unlink()
+        path(section).unlink()
     except FileNotFoundError:
         pass
-    return list(DEFAULTS)
+    return list(SECTIONS[section])
 
 
-def lines() -> list:
-    """The rules as the bulleted lines the fragment and the prompt print."""
-    return ["- " + r for r in load()]
+def lines(section="rules") -> list:
+    """The section as the bulleted lines the fragment and the prompt print."""
+    return ["- " + r for r in load(section)]
 
 
-def packet() -> dict:
-    """What the backend hands the NEW ROOM form."""
-    return {"rules": load(), "defaults": list(DEFAULTS), "custom": is_custom(),
-            "max_rules": MAX_RULES, "max_chars": MAX_CHARS}
+def packet(section="rules") -> dict:
+    """What the backend hands the rules editor (NEW ROOM form or logo menu)."""
+    section = _section(section)
+    return {"section": section, "rules": load(section), "defaults": list(SECTIONS[section]),
+            "custom": is_custom(section), "max_rules": MAX_RULES, "max_chars": MAX_CHARS}

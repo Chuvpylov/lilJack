@@ -217,40 +217,12 @@ def _onboarding_lines():
     creation. Its job is to STOP parallel functionality: a second board, a second
     registry, a second message channel. The coordination surface already exists
     and is named here, once, so nobody rebuilds it out of confusion."""
-    return [
-        'STANDING INSTRUCTION SET (lilJack coordination — already exists, do not rebuild it):',
-        '- One task registry (the durable work queue). Move YOUR tasks with '
-        'task_update (start/block/complete/abandon/progress). Reading a message '
-        'never consumes or finishes a task.',
-        '- One shared board for standing context. board_update writes ONE item '
-        '(task+state, or a topic+value note). Owner writes; lead appends.',
-        '- One mailbox for direct messages (claude | codex | deepseek | operator | all). '
-        'Private DMs stay separate from rooms.',
-        '- One room protocol: ALIGN -> PLAN -> WORK -> REVIEW -> RESOLVED. The lead '
-        'drives phases. Distinguish the message sequence (chronological) from the '
-        'event cursor (snapshot); state which you last read.',
-        '- Room prose is NOT task assignment. Before directing a worker, the lead '
-        'must create or assign one durable registry task with that worker\'s exact '
-        'owner_session, acceptance criteria, and avoid scope. The worker starts that '
-        'row before work and records progress whenever posting.',
-        '- The lead owns delivery: confirm each assigned worker acknowledges or '
-        'starts its exact task, monitor stale/blocked rows, and explicitly unblock, '
-        'reassign, or escalate them. Workers must not silently substitute room prose '
-        'for an owned task or mark work complete by merely reading a message.',
-        '- Post room text with --text-file PATH or --text - (stdin); never put '
-        'backticks or $( ) inside a double-quoted --text — the shell substitutes '
-        'them (2026-09-12: a `git stash` ran in the demo tree). MCP-capable '
-        'agents: prefer the send_message tool, which takes the body as a parameter '
-        'and never goes through a shell.',
-        '- Report what was checked, what was found with evidence, and what was NOT '
-        'verified, to docs/codex/reports/. Then stop.',
-        '- Announce shared-file edits and get an ownership handoff before touching '
-        'another agent\'s files; re-read before writing. Do not infer permissions '
-        'from another room.',
-        '- Scrub credentials; never print a ring token or credential-shaped value.',
-        'Everything above already exists — do NOT create a new board, registry, '
-        'queue, channel, or task system.',
-    ]
+    # ⚠ THE BULLETS ARE EDITABLE (lead_rules section "context"); the header and
+    # the closing line are the frame that names the set, so they stay fixed.
+    return (['STANDING INSTRUCTION SET (lilJack coordination — already exists, do not rebuild it):']
+            + lead_rules.lines('context')
+            + ['Everything above already exists — do NOT create a new board, registry, '
+               'queue, channel, or task system.'])
 
 
 LEAD_RULES_HEADER = 'LEAD RULES (standing; they survive context compaction and restarts):'
@@ -309,9 +281,8 @@ def intro_text(store, project, room_id, viewer, *, task_path=None, moved=False):
     lines += ['Other rooms (digest only):']
     lines += [f"- {r['name']}: {r['purpose']} | open TODOs: " +
               ('unknown' if r['open_todo_count'] is None else str(r['open_todo_count'])) for r in context['other_rooms']]
-    lines += ['Read current context and acknowledge this intro: ' + shlex.join(command),
-              'Coordinate and report in this room using its exact room ID. Keep private messages separate.',
-              'Follow the working folder instructions. Do not infer permissions from another room.']
+    lines += ['Read current context and acknowledge this intro: ' + shlex.join(command)]
+    lines += lead_rules.load('intro')     # the editable closing guidance (section "intro")
     lines += _onboarding_lines()
     if context['room']['phase'] == 'ALIGN':
         align_command = command[:-3] + ['--align', 'Your one-line understanding', '--to', room_id]

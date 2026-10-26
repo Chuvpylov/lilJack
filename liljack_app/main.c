@@ -106,13 +106,16 @@ enum {H_SESSION=1,H_CREATE,H_HEADER,H_TERMINAL,H_RETILE,H_FULL,H_TEAM,H_HIDE,
       H_POPUP_VOL_DOWN,H_POPUP_VOL_UP,H_POPUP_SEEK,H_RIBBON_MORE,H_POPUP_RESOLUTION,H_POPUP_RESIZE,H_POPUP_VOLUME,H_SETTINGS,H_SET_ROW,H_SET_DEC,H_SET_INC,H_SET_RESET,H_SET_CLOSE,H_SET_SAVE,H_ROOM_MORE,
       H_ROOM_FOLDER_ENTRY,H_ROOM_FOLDER_UP,H_ROOM_FOLDER_USE,H_ROOM_FOLDER_BROWSE,
       H_FB_OPEN,H_FB_HOME,H_FB_PROJECT,H_FB_HIDDEN,H_FB_CRUMB,H_FB_PATH,H_FB_CANCEL,H_FB_CLOSE,H_FB_BODY,
-      H_ROOM_SLOT_ROLE,H_ROOM_SLOT_DEL,H_ROOM_SLOT_ADD,H_ROOM_RULES,H_RULE_ROW,H_RULE_DEL,H_RULE_ADD,H_RULES_SAVE,H_RULES_CANCEL,H_RULES_DEFAULTS};
+      H_ROOM_SLOT_ROLE,H_ROOM_SLOT_DEL,H_ROOM_SLOT_ADD,H_ROOM_RULES,H_RULE_ROW,H_RULE_DEL,H_RULE_ADD,H_RULES_SAVE,H_RULES_CANCEL,H_RULES_DEFAULTS,H_RULES_TAB};
 /* Which dropdown is open, and one row of it. */
 enum {MENU_NONE=0,MENU_ROLE,MENU_FILE,MENU_FILES,MENU_ROOM,MENU_STATE,MENU_TOOLBAR,MENU_OPEN_HERE,MENU_LOGO,MENU_ROOMS,MENU_SLOT_KIND,MENU_SLOT_ROLE};
 /* NEW ROOM agents and the editable lead rules (2026-10-24). */
 #define ROOM_SLOTS 8
 #define RULES_MAX 24
 #define RULE_CAP 401
+/* The editor's sections, in tab order; names match lead_rules.SECTIONS. */
+#define RULES_SECTIONS 3
+static const char *RULES_SECTION_NAME[RULES_SECTIONS]={"rules","context","intro"};
 /* The room lifecycle, in the order the operator named it. `removed` is a 30-day
  * trash, not a delete, so it is listed last and never shown by default. */
 static const char *ROOM_STATES[6]={"active","resolved","backlog","abandoned","archived","removed"};
@@ -177,6 +180,10 @@ typedef struct {
      * (lead_rules.py), edited in place; CANCEL restores rules_backup. */
     int rules_dialog,rules_sel,rules_scroll,nrules,nrules_backup,nrule_defaults,rules_custom,rules_loading;
     char lead_rules[RULES_MAX][RULE_CAP],rules_backup[RULES_MAX][RULE_CAP],rule_defaults[RULES_MAX][RULE_CAP];
+    /* The same editor serves three sections (lead rules, agent context, intro);
+     * lead_rules[] is the OPEN section's buffer, sec_text[] what each last saved. */
+    int rules_section,sec_n[RULES_SECTIONS],sec_custom[RULES_SECTIONS];
+    char sec_text[RULES_SECTIONS][RULES_MAX][RULE_CAP];
     char room_name[161],room_folder[512],room_purpose[257],room_todo[3][161];
     char room_folder_listed[520],room_folder_base[512],room_folder_error[160];
     char room_folder_entries[500][256];
@@ -1264,24 +1271,45 @@ static int rules_from_json(char dst[][RULE_CAP],json_object *arr){
         const char *t=json_object_get_string(json_object_array_get_idx(arr,i));if(t)copy(dst[n++],RULE_CAP,t);}
     return n;
 }
+static int rules_section_index(const char *name){
+    for(int i=0;i<RULES_SECTIONS;i++)if(!strcmp(name,RULES_SECTION_NAME[i]))return i;
+    return 0;                                   /* a packet without a section is the lead rules */
+}
 static void rules_apply_packet(App *a,json_object *p){
     if(!p)return;
-    int n=rules_from_json(a->rule_defaults,jget(p,"defaults"));if(n)a->nrule_defaults=n;
-    json_object *c=jget(p,"custom");a->rules_custom=c&&json_object_get_boolean(c);
+    int s=rules_section_index(jstr(p,"section")),open=s==a->rules_section;
+    json_object *c=jget(p,"custom");a->sec_custom[s]=c&&json_object_get_boolean(c);
+    if(open){int n=rules_from_json(a->rule_defaults,jget(p,"defaults"));if(n)a->nrule_defaults=n;a->rules_custom=a->sec_custom[s];}
+    char tmp[RULES_MAX][RULE_CAP];int m=rules_from_json(tmp,jget(p,"rules"));
+    if(m)rules_copy(a->sec_text[s],&a->sec_n[s],tmp,m);
     /* An open editor keeps what is being typed: a reply only fills it while it
      * is still waiting for its first load (rules_loading). */
-    if(!a->rules_dialog||a->rules_loading){char tmp[RULES_MAX][RULE_CAP];int m=rules_from_json(tmp,jget(p,"rules"));
+    if(open&&(!a->rules_dialog||a->rules_loading)){
         if(m){rules_copy(a->lead_rules,&a->nrules,tmp,m);rules_copy(a->rules_backup,&a->nrules_backup,tmp,m);a->rules_sel=0;}
-        a->rules_loading=0;a->dirty=1;}
+        a->rules_loading=0;}
+    a->dirty=1;
 }
 static void rules_request(App *a,const char *action){
     if(a->demo)return;json_object *o=json_object_new_object();jadd(o,"action",action);
+    jadd(o,"section",RULES_SECTION_NAME[clamp(a->rules_section,0,RULES_SECTIONS-1)]);
     if(!strcmp(action,"rules_set")){json_object *arr=json_object_new_array();
         for(int i=0;i<a->nrules;i++)json_object_array_add(arr,json_object_new_string(a->lead_rules[i]));
         json_object_object_add(o,"rules",arr);}
     request(a,o);
 }
-static void rules_open(App *a){
+static int rules_dirty(App *a){
+    if(a->nrules!=a->nrules_backup)return 1;
+    for(int i=0;i<a->nrules;i++)if(strcmp(a->lead_rules[i],a->rules_backup[i]))return 1;
+    return 0;
+}
+static void rules_open(App *a,int section){
+    section=clamp(section,0,RULES_SECTIONS-1);
+    /* The buffer holds whichever section was open last; another section starts
+     * from what that one last saved (empty until its first load). */
+    if(section!=a->rules_section){
+        a->rules_section=section;rules_copy(a->lead_rules,&a->nrules,a->sec_text[section],a->sec_n[section]);
+        a->nrule_defaults=0;a->rules_custom=a->sec_custom[section];
+    }
     /* ⚠ LOADED ON OPEN, NOT WITH THE FORM. A rules_get sent when NEW ROOM opened
      * held request()'s one in-flight slot, so a quick CREATE was queued behind
      * it (room-start-once S1 caught it). The editor asks when it is opened. */
@@ -1296,7 +1324,11 @@ static void rules_close(App *a,int save){
         int n=0;for(int i=0;i<a->nrules;i++){const char *t=a->lead_rules[i];while(*t==' ')t++;if(*t){if(n!=i)copy(a->lead_rules[n],RULE_CAP,a->lead_rules[i]);n++;}}
         if(!n){toast(a,"Keep at least one rule, or press DEFAULTS");return;}
         a->nrules=n;a->rules_dialog=0;a->rules_custom=1;rules_request(a,"rules_set");
-        toast(a,a->demo?"Rules kept for this demo session":"Lead rules saved · new rooms and prompts use them");
+        int s=a->rules_section;a->sec_custom[s]=1;rules_copy(a->sec_text[s],&a->sec_n[s],a->lead_rules,n);
+        static const char *saved[RULES_SECTIONS]={"Lead rules saved · new rooms and prompts use them",
+            "Agent context saved · new intros, prompts and room folders use it",
+            "Initial message saved · every agent launched from now on gets it"};
+        toast(a,a->demo?"Kept for this demo session":saved[s]);
     } else {rules_copy(a->lead_rules,&a->nrules,a->rules_backup,a->nrules_backup);a->rules_dialog=0;}
     a->dirty=1;
 }
@@ -1745,6 +1777,7 @@ static int menu_rows(App *a,MenuRow *out,int cap){
         #define NOTE(R,S) do{if(R)copy((R)->note,sizeof((R)->note),S);}while(0)
         MenuRow *r;
         HDR("ROOMS");ROW("New room",H_NEW_ROOM,0);ROW("Retile",H_RETILE,0);
+        r=ROW("Agent rules & intro\u2026",H_ROOM_RULES,0);if(r)r->checked=a->rules_dialog;
         r=ROW("Full screen",H_FULL,0);if(r)r->checked=a->full[0]!=0;NOTE(r,"F11");
         HDR("SESSIONS");r=ROW("Team",H_TEAM,0);if(r)r->checked=a->team;NOTE(r,"F7");
         r=ROW("Status",H_STATUS,0);if(r)r->checked=a->status_open;
@@ -3472,8 +3505,10 @@ static const lj_block LJ_BLOCKS[]={
 };
 #define LJ_BLOCK_COUNT ((int)(sizeof(LJ_BLOCKS)/sizeof(LJ_BLOCKS[0])))
 static void draw_gallery(App *a);
-/* The lead-rules editor: one single-line field per rule, scrolled to the
- * selected one. It sits over the NEW ROOM form and owns every hit while open. */
+/* The rules editor: one single-line field per line, scrolled to the selected
+ * one, with a tab per section (lead rules · agent context · initial message).
+ * It sits over the NEW ROOM form, or alone when opened from the logo menu, and
+ * owns every hit while open. */
 static void rules_render(App *a,int w){
     a->nhits=0;
     int rowh=CELLH,pad=CELLW;
@@ -3483,7 +3518,13 @@ static void rules_render(App *a,int w){
     panel(m,PANEL,0);if(!render_ansi)panel((lj_rect){m.x+1,m.y+1,m.w-2,m.h-2},PANEL,11);
     border(m,GREEN);
     int lx=m.x+pad,fw=w-2*pad-5*CELLW;
-    text(lx,m.y,a->rules_loading?"LEAD RULES · loading\u2026":"LEAD RULES · every new room and agent prompt carries these",GREEN,w-2*pad);
+    static const char *title[RULES_SECTIONS]={"LEAD RULES · every room and agent prompt carries these",
+        "AGENT CONTEXT · in every intro, prompt and room folder",
+        "INITIAL MESSAGE · closes every agent's first message"};
+    static const char *tab[RULES_SECTIONS]={"RULES","CONTEXT","INTRO"};
+    int sec=clamp(a->rules_section,0,RULES_SECTIONS-1),tx=m.x+w-pad-RULES_SECTIONS*10*CELLW;
+    text(lx,m.y,a->rules_loading?"loading\u2026":title[sec],GREEN,tx-lx-CELLW);
+    for(int t=0;t<RULES_SECTIONS;t++)button(a,(lj_rect){tx+t*10*CELLW,m.y,9*CELLW,rowh},tab[t],H_RULES_TAB,t,NULL,t==sec);
     if(a->rules_sel<a->rules_scroll)a->rules_scroll=a->rules_sel;
     if(a->rules_sel>=a->rules_scroll+shown)a->rules_scroll=a->rules_sel-shown+1;
     a->rules_scroll=clamp(a->rules_scroll,0,a->nrules>shown?a->nrules-shown:0);
@@ -3510,9 +3551,9 @@ static void rules_render(App *a,int w){
     }
     if(a->nrules>shown){char more[64];snprintf(more,sizeof more,"rules %d-%d of %d · ↑↓ to move",a->rules_scroll+1,a->rules_scroll+shown,a->nrules);text(lx,y,more,DIM,w-2*pad);}
     y+=rowh;
-    text(lx,y,"type to edit · Enter adds a rule below · Ctrl+S saves · Esc cancels",DIM,w-2*pad);
+    text(lx,y,"type to edit · Enter adds a line below · Ctrl+S saves · Esc cancels",DIM,w-2*pad);
     y+=rowh;
-    button(a,(lj_rect){lx,y,12*CELLW,rowh},"+ ADD RULE",H_RULE_ADD,0,NULL,0);
+    button(a,(lj_rect){lx,y,12*CELLW,rowh},sec?"+ ADD LINE":"+ ADD RULE",H_RULE_ADD,0,NULL,0);
     button(a,(lj_rect){lx+13*CELLW,y,11*CELLW,rowh},"DEFAULTS",H_RULES_DEFAULTS,0,NULL,0);
     button(a,(lj_rect){m.x+w-pad-22*CELLW,y,9*CELLW,rowh},"CANCEL",H_RULES_CANCEL,0,NULL,0);
     button(a,(lj_rect){m.x+w-pad-12*CELLW,y,12*CELLW,rowh},"SAVE",H_RULES_SAVE,0,NULL,1);
@@ -3990,9 +4031,14 @@ static void render(App *a){
         }
         y+=rowh;
         text(lx,y,"RULES",CYAN,11*CELLW);
-        {   char line[96];snprintf(line,sizeof line,"%d lead rule%s%s",a->nrules,a->nrules==1?"":"s",a->rules_custom?" · edited":a->nrules?" · defaults":"");
-            text(fx,y,a->nrules?line:"the standing lead rules every agent in the room follows",DIM,fw-16*CELLW);
-            button(a,(lj_rect){fx+fw-15*CELLW,y,15*CELLW,rowh},"EDIT RULES",H_ROOM_RULES,0,NULL,a->rules_dialog);
+        /* One button per section: the operator (2026-10-26) wants rules, context and the
+         * initial message editable right here while creating the room. */
+        {   int edited=0;for(int t=0;t<RULES_SECTIONS;t++)edited+=a->sec_custom[t];
+            char line[96];snprintf(line,sizeof line,"rules · context · intro%s",edited?" · edited":" · defaults");
+            text(fx,y,line,DIM,fw-37*CELLW);
+            button(a,(lj_rect){fx+fw-36*CELLW,y,12*CELLW,rowh},"LEAD RULES",H_ROOM_RULES,0,NULL,a->rules_dialog&&a->rules_section==0);
+            button(a,(lj_rect){fx+fw-23*CELLW,y,10*CELLW,rowh},"CONTEXT",H_ROOM_RULES,1,NULL,a->rules_dialog&&a->rules_section==1);
+            button(a,(lj_rect){fx+fw-12*CELLW,y,12*CELLW,rowh},"INTRO MSG",H_ROOM_RULES,2,NULL,a->rules_dialog&&a->rules_section==2);
         }
         y+=rowh;
         button(a,(lj_rect){modal.x+w-pad-22*CELLW,y,9*CELLW,rowh},"CANCEL",H_ROOM_CANCEL,0,NULL,0);
@@ -4000,6 +4046,8 @@ static void render(App *a){
         folder_browser_render(a);
         if(a->rules_dialog)rules_render(a,w);
     }
+    /* Opened from the logo menu: the same editor, with no form underneath. */
+    else if(a->rules_dialog)rules_render(a,clamp(a->w-8*CELLW,40*CELLW,90*CELLW));
     int ribbon_moving=fullscreen?0:draw_ribbon(a,0);
     if(a->dragging){
         for(int i=0;i<a->dock.tile_count;i++){
@@ -4289,7 +4337,12 @@ static void activate(App *a,Hit *h){
          * deepseek workers is the common case this exists for. */
         int last=a->room_nslot?a->room_slot_kind[a->room_nslot-1]:1;room_slot_add(a,last,1);
     }
-    else if(h->kind==H_ROOM_RULES){menu_close(a);rules_open(a);}
+    else if(h->kind==H_ROOM_RULES){menu_close(a);rules_open(a,h->index);}
+    else if(h->kind==H_RULES_TAB){
+        if(h->index==a->rules_section)return;
+        if(rules_dirty(a)){toast(a,"SAVE or CANCEL this section before switching");return;}
+        rules_open(a,h->index);
+    }
     else if(h->kind==H_RULE_ROW){a->rules_sel=clamp(h->index,0,a->nrules-1);}
     else if(h->kind==H_RULE_DEL){rules_delete(a,h->index);}
     else if(h->kind==H_RULE_ADD){rules_insert(a,a->nrules);}
@@ -4402,7 +4455,8 @@ static void visual_ingest(App *a,const char *value){
 }
 static void input_paste(App *a,const char *value,int brackets){
     if(a->copy_pause||a->about_open||a->settings_open)return;
-    if(a->room_dialog){if(a->rules_dialog)rules_input(a,value);else room_name_input(a,value);return;}
+    if(a->rules_dialog){rules_input(a,value);return;}
+    if(a->room_dialog){room_name_input(a,value);return;}
     if(a->team||a->status_open)return;
     char path[PATH_MAX];if((!strcmp(a->focus,"canvas")||!strcmp(a->focus,"room"))&&visual_path(value,path,sizeof path)){
         visual_ingest(a,path);return;
@@ -4486,7 +4540,7 @@ static void key(App *a,SDL_KeyboardEvent *e){
         a->dirty=1;return;
     }
     if((ctrl&&k==SDLK_v)||(shift&&k==SDLK_INSERT)){clipboard_paste(a);return;}
-    if(a->room_dialog&&a->rules_dialog){
+    if(a->rules_dialog){
         if(k==SDLK_ESCAPE)rules_close(a,0);
         else if(ctrl&&k==SDLK_s)rules_close(a,1);
         else if(k==SDLK_RETURN||k==SDLK_KP_ENTER)rules_insert(a,a->rules_sel+1);
@@ -4685,7 +4739,7 @@ static void event(App *a,SDL_Event *e){
         }
     }
     if(e->type==SDL_TEXTINPUT&&a->settings_open){settings_text(a,e->text.text);return;}   /* the theme editor owns typed text (hex entry); nothing reaches a tile */
-    if(e->type==SDL_TEXTINPUT&&!a->team&&!a->status_open){if(a->room_dialog){if(a->rules_dialog)rules_input(a,e->text.text);else room_name_input(a,e->text.text);return;}if(!strcmp(a->focus,"room")){if(message_input(a))add_draft(a,e->text.text);return;}else {Session *s=session(a,a->focus);if(s){if(modifiers()&KMOD_ALT)send_bytes(a,s,"\033",1);send_bytes(a,s,e->text.text,strlen(e->text.text));}}return;}
+    if(e->type==SDL_TEXTINPUT&&!a->team&&!a->status_open){if(a->rules_dialog){rules_input(a,e->text.text);return;}if(a->room_dialog){room_name_input(a,e->text.text);return;}if(!strcmp(a->focus,"room")){if(message_input(a))add_draft(a,e->text.text);return;}else {Session *s=session(a,a->focus);if(s){if(modifiers()&KMOD_ALT)send_bytes(a,s,"\033",1);send_bytes(a,s,e->text.text,strlen(e->text.text));}}return;}
     if(e->type==SDL_MOUSEMOTION){int prior=-1,next=-1;for(int i=0;i<a->dock.divider_count;i++){if(inside(hitrect(a->dock.dividers[i].rect),a->mousex,a->mousey))prior=i;if(inside(hitrect(a->dock.dividers[i].rect),e->motion.x,e->motion.y))next=i;}if(prior!=next&&!a->team&&!a->status_open&&!a->room_dialog&&!a->about_open)a->dirty=1;
         if(e->motion.x/CELLW!=a->mousex/CELLW||e->motion.y/CELLH!=a->mousey/CELLH)a->dirty=1;  /* hover follows the pointer */
         a->mousex=e->motion.x;a->mousey=e->motion.y;if(a->team||a->status_open||a->room_dialog||a->about_open||a->settings_open)return;
