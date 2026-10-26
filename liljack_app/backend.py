@@ -131,7 +131,9 @@ class Backend:
         result.update(open_task_snapshot(self.store, self.project))
         bindings = {s['id']: s for s in managed}
         # Bounded visible working set, app-owned sessions first. Durable store keeps all.
-        result['sessions'].sort(key=lambda s: (s['id'] in bindings, s.get('observed_at') or ''), reverse=True)
+        # Closed (dismissed) tabs sort last so they never push a live one past the cap.
+        result['sessions'].sort(key=lambda s: (not s.get('dismissed'), s['id'] in bindings,
+                                               s.get('observed_at') or ''), reverse=True)
         result['sessions'] = result['sessions'][:64]
         from .worker_wake import unavailable
         from liljack_mail import _scrub
@@ -390,6 +392,22 @@ class Backend:
                 else:
                     self.tmux.call('send-keys', '-t', live['pane'], 'Enter' if operation == 'submit' else 'C-c')
             return {**self.snapshot(), 'control_sent': operation, 'target': req['session']}
+        if action == 'session_close':
+            # An agent TAB's close: a live terminal is stopped (confirmed, as
+            # control/stop), then the tab is dismissed whatever the session was.
+            self.store._participant(self.project, req['session'])
+            live = next((r for r in self.tmux.sessions(self.project)
+                         if r['id'] == req['session'] and r['state'] != 'exited'), None)
+            if live:
+                if req.get('confirmed') is not True:
+                    raise ValueError('Confirm stopping this session')
+                if live.get('backend') == 'native':
+                    NativeBackend().stop(live.get('daemon_id') or live['tmux_name'])
+                else:
+                    self.tmux.call('kill-session', '-t', live['tmux_name'])
+                self.store.unbind_terminal(req['session'], actor='operator')
+            self.store.dismiss_session(self.project, req['session'], actor='operator')
+            return {**self.snapshot(), 'closed': req['session'], 'stopped': bool(live)}
         if action == 'assign':
             self.store._participant(self.project, req['session'])
             self.store.assign(req['session'], req['role'], req.get('parent') or None, actor='operator')

@@ -460,6 +460,30 @@ class BackendTests(unittest.TestCase):
             self.app.request({'action': 'control', 'session': ids[1], 'operation': 'submit'})
         self.tmux.call.assert_not_called()
 
+    def test_session_close_stops_live_then_dismisses_tab(self):
+        # The operator, 2026-10-26: "in standalone i have some agent tabs i cant close".
+        ids = [self.app.request({'action': 'create', 'agent': 'claude'})['created'] for _ in range(2)]
+        self.tmux.call.reset_mock()
+        with self.assertRaises(ValueError):           # a live terminal needs the confirm
+            self.app.request({'action': 'session_close', 'session': ids[1]})
+        self.tmux.call.assert_not_called()
+        got = self.app.request({'action': 'session_close', 'session': ids[1], 'confirmed': True})
+        self.tmux.call.assert_called_with('kill-session', '-t', self.rows[1]['tmux_name'])
+        self.assertTrue(got['stopped'])
+        rows = {r['id']: r for r in got['sessions']}
+        self.assertTrue(rows[ids[1]]['dismissed'])
+        self.assertFalse(rows[ids[0]]['dismissed'])
+        self.assertEqual(got['sessions'][-1]['id'], ids[1])   # closed tabs sort last
+        # An ended session closes with no confirm and kills nothing.
+        self.rows[0]['state'] = 'exited'
+        self.tmux.call.reset_mock()
+        got = self.app.request({'action': 'session_close', 'session': ids[0]})
+        self.tmux.call.assert_not_called()
+        self.assertFalse(got['stopped'])
+        self.assertTrue(all(r['dismissed'] for r in got['sessions']))
+        with self.assertRaises(ValueError):
+            self.app.request({'action': 'session_close', 'session': 's-not-a-session'})
+
     def test_refresh_retains_identity_roles_and_binding(self):
         sid = self.create('claude', self.project, self.app.store.root)
         observed = self.app.store.observe(self.rows[0])

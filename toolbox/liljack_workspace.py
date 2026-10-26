@@ -151,6 +151,10 @@ class Workspace:
                 payload TEXT NOT NULL, room_id TEXT NOT NULL, result TEXT NOT NULL,
                 PRIMARY KEY(project, request_id)
             );
+            CREATE TABLE IF NOT EXISTS session_dismissals (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+                dismissed_at TEXT NOT NULL
+            );
         """)
         from liljack_app.room_protocol import ensure_schema
         ensure_schema(self)
@@ -871,6 +875,33 @@ class Workspace:
                             (json.dumps(data, ensure_ascii=False), data['id']))
             self._emit(project, 'session', data)
 
+    def dismiss_session(self, project, session_id, *, actor):
+        """Close an agent TAB: the session leaves the agent strip, its history
+        stays (Team, messages, registry rows).
+
+        ⚠ STANDALONE COLLECTS EVERYTHING NOBODY CLOSED. Every session with no
+        room lands there — ended shells, stopped agents, codex sessions this app
+        only observes — and the strip had no way to drop one (the operator, 2026-10-26:
+        "in standalone i have some agent tabs i cant close"). Stopping a process
+        is the backend's job; this only records that the operator closed the tab.
+        Sticky: a live terminal re-lists itself every snapshot, so "reappear when
+        seen again" would undo the close at once."""
+        if actor != 'operator':
+            raise PermissionError('only the operator closes agent tabs')
+        project = project_key(project)
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row = self.db.execute('SELECT project FROM sessions WHERE id=?', (session_id,)).fetchone()
+            if not row or row[0] != project:
+                raise ValueError('session does not belong to this project')
+            self.db.execute('INSERT INTO session_dismissals VALUES(?,?) ON CONFLICT(session_id) '
+                            'DO UPDATE SET dismissed_at=excluded.dismissed_at', (session_id, utcnow()))
+            self._emit(project, 'session_dismissed', {'session_id': session_id})
+            self.db.execute('COMMIT')
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
+
     def unbind_terminal(self, session_id, *, actor):
         if not self.may_control(actor, session_id):
             raise PermissionError("session is outside your control scope")
@@ -930,6 +961,8 @@ class Workspace:
         session["lead_id"] = team[1] if team else None
         intro = self.db.execute('SELECT state FROM session_intros WHERE session_id=?', (session['id'],)).fetchone()
         session['intro_state'] = intro[0] if intro else None
+        gone = self.db.execute('SELECT 1 FROM session_dismissals WHERE session_id=?', (session['id'],)).fetchone()
+        session['dismissed'] = bool(gone)
         binding = self.db.execute("SELECT * FROM bindings WHERE session_id=?", (session["id"],)).fetchone()
         if binding and 0 <= time.time() - binding["verified_at"] <= 10:
             session["capabilities"] = ["room", "terminal"]

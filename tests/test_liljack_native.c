@@ -505,6 +505,21 @@ int main(void) {
     render(a);{int tabs=0;for(int i=0;i<a->nhits;i++)tabs+=a->hits[i].kind==H_RULES_TAB;CHECK(tabs==3);}
     type_text("x");CHECK(!strcmp(a->lead_rules[0],"rule Ax"));press(SDLK_ESCAPE);
     CHECK(!a->rules_dialog&&!strcmp(a->lead_rules[0],"rule A"));
+    /* ⚠ EVERY AGENT TAB CLOSES (the operator, 2026-10-26: "in standalone i have some agent
+     * tabs i cant close"). Each chip carries its own ✕; a live terminal asks
+     * first (the ✕ turns red), and a closed tab leaves the strip and the count. */
+    switch_workspace(a,"");render(a);
+    {   Session *lone=NULL;for(int i=0;i<a->norder;i++){Session *s=&a->sessions[a->order[i]];if(!s->room_id[0])lone=s;}
+        CHECK(lone);int before=group_count(a,"");CHECK(before>=1);
+        Hit x=get_hit(H_AGENT_CLOSE,lone->id);CHECK(x.kind==H_AGENT_CLOSE);
+        Hit chip=get_hit(H_SESSION,lone->id);CHECK(x.r.x>=chip.r.x&&x.r.x+x.r.w<=chip.r.x+chip.r.w);   /* inside its chip */
+        a->demo=0;mouse_event(SDL_MOUSEBUTTONDOWN,x.r.x+2,x.r.y+2);mouse_event(SDL_MOUSEBUTTONUP,x.r.x+2,x.r.y+2);
+        CHECK(!strcmp(a->stop_confirm,lone->id));CHECK(!lone->dismissed);   /* live: asked, nothing closed */
+        a->demo=1;a->stop_confirm[0]=0;render(a);x=get_hit(H_AGENT_CLOSE,lone->id);
+        mouse_event(SDL_MOUSEBUTTONDOWN,x.r.x+2,x.r.y+2);mouse_event(SDL_MOUSEBUTTONUP,x.r.x+2,x.r.y+2);
+        CHECK(lone->dismissed);CHECK(!dock_has(a,lone->id));CHECK(group_count(a,"")==before-1);
+        render(a);{int chips=0;for(int i=0;i<a->nhits;i++)chips+=(a->hits[i].kind==H_SESSION||a->hits[i].kind==H_AGENT_CLOSE)&&!strcmp(a->hits[i].id,lone->id);CHECK(chips==0);}
+    }
     switch_workspace(a,"r-demo-build");render(a);
     /* Actual title drag into another room changes membership, not just geometry. */
     Hit agent_header=get_hit(H_HEADER,"demo-2"),group=get_hit(H_GROUP,"r-demo-research");

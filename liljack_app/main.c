@@ -80,6 +80,7 @@ typedef struct {
     pid_t pid;
     int fd,cols,rows,seen,managed,connected,dock_pending;
     int native;              /* 1 = owkterm-native (sessiond) backend, no tmux */
+    int dismissed;           /* the operator closed its agent tab: off the strip, still in Team */
     char *queue;size_t queued;
     unsigned char *rx;       /* native frame reassembly buffer */
     size_t rxlen,rxcap;
@@ -106,7 +107,7 @@ enum {H_SESSION=1,H_CREATE,H_HEADER,H_TERMINAL,H_RETILE,H_FULL,H_TEAM,H_HIDE,
       H_POPUP_VOL_DOWN,H_POPUP_VOL_UP,H_POPUP_SEEK,H_RIBBON_MORE,H_POPUP_RESOLUTION,H_POPUP_RESIZE,H_POPUP_VOLUME,H_SETTINGS,H_SET_ROW,H_SET_DEC,H_SET_INC,H_SET_RESET,H_SET_CLOSE,H_SET_SAVE,H_ROOM_MORE,
       H_ROOM_FOLDER_ENTRY,H_ROOM_FOLDER_UP,H_ROOM_FOLDER_USE,H_ROOM_FOLDER_BROWSE,
       H_FB_OPEN,H_FB_HOME,H_FB_PROJECT,H_FB_HIDDEN,H_FB_CRUMB,H_FB_PATH,H_FB_CANCEL,H_FB_CLOSE,H_FB_BODY,
-      H_ROOM_SLOT_ROLE,H_ROOM_SLOT_DEL,H_ROOM_SLOT_ADD,H_ROOM_RULES,H_RULE_ROW,H_RULE_DEL,H_RULE_ADD,H_RULES_SAVE,H_RULES_CANCEL,H_RULES_DEFAULTS,H_RULES_TAB};
+      H_ROOM_SLOT_ROLE,H_ROOM_SLOT_DEL,H_ROOM_SLOT_ADD,H_ROOM_RULES,H_RULE_ROW,H_RULE_DEL,H_RULE_ADD,H_RULES_SAVE,H_RULES_CANCEL,H_RULES_DEFAULTS,H_RULES_TAB,H_AGENT_CLOSE};
 /* Which dropdown is open, and one row of it. */
 enum {MENU_NONE=0,MENU_ROLE,MENU_FILE,MENU_FILES,MENU_ROOM,MENU_STATE,MENU_TOOLBAR,MENU_OPEN_HERE,MENU_LOGO,MENU_ROOMS,MENU_SLOT_KIND,MENU_SLOT_ROLE};
 /* NEW ROOM agents and the editable lead rules (2026-10-24). */
@@ -826,7 +827,8 @@ static void apply_snapshot(App *a,json_object *d){
         char previous_room[81];copy(previous_room,sizeof(previous_room),s->room_id);copy(s->room_id,sizeof(s->room_id),jstr(row,"room_id"));
         if(strcmp(previous_room,s->room_id))s->dock_pending=1;
         s->managed=s->name[0]!=0;
-        if(!terminal_tile(s))s->dock_pending=0;
+        {json_object *gone=jget(row,"dismissed");s->dismissed=gone&&json_object_get_boolean(gone);}
+        if(!terminal_tile(s)||s->dismissed)s->dock_pending=0;
         if(in_workspace(a,s)&&terminal_tile(s)&&s->dock_pending&&(dock_has(a,s->id)||lj_dock_drop(&a->dock,s->id,"room",LJ_DOCK_LEFT)))s->dock_pending=0;a->order[a->norder++]=(int)(s-a->sessions);
     }
     /* ⚠ ACTIVE IN FRONT, CLOSED AT THE END (the operator, 2026-09-10). The order came
@@ -871,6 +873,10 @@ static void apply_snapshot(App *a,json_object *d){
             toast(a,why);
         } else toast(a,"Room created · agents launching with their roles and first todo");
     }
+    const char *closed=jstr(d,"closed");
+    if(*closed){lj_dock_remove(&a->dock,closed);if(!strcmp(a->focus,closed))copy(a->focus,sizeof(a->focus),"room");
+        if(!strcmp(a->selected,closed))a->selected[0]=0;save_layout(a);
+        toast(a,json_object_get_boolean(jget(d,"stopped"))?"Session stopped · tab closed · history stays in Team":"Tab closed · the session stays in Team");}
     const char *created=jstr(d,"created");
     if(*created){Session *s=session(a,created);if(terminal_tile(s)){switch_workspace(a,s->room_id);copy(a->selected,sizeof(a->selected),s->id);copy(a->focus,sizeof(a->focus),s->id);lj_dock_drop(&a->dock,s->id,"room",LJ_DOCK_LEFT);attach(a,s);save_layout(a);toast(a,"Session opened · drag its title to arrange it");}}
     /* Stop closes the tile only after the backend acknowledges success.
@@ -1482,7 +1488,7 @@ static void create_room(App *a){
         if(request(a,o))a->room_starting=SDL_GetTicks()|1;
     }
 }
-static int group_count(App *a,const char *id){int n=0;for(int i=0;i<a->norder;i++)if(!strcmp(a->sessions[a->order[i]].room_id,id))n++;return n;}
+static int group_count(App *a,const char *id){int n=0;for(int i=0;i<a->norder;i++){Session *s=&a->sessions[a->order[i]];if(!s->dismissed&&!strcmp(s->room_id,id))n++;}return n;}
 /* ⚠ ROOMS ARE TABS, NOT A SIDE PANEL. the operator, 2026-09-09: "room folder selector
  * and file explorer, rooms are browser tabs not side panel so we have more
  * space for terminals". The old list cost a 19-to-24 column column down the
@@ -1671,7 +1677,7 @@ static void draw_agentbar(App *a,lj_rect bar){
     int x=bar.x,hidden=0;
     for(int i=0;i<a->norder;i++){
         Session *agent=&a->sessions[a->order[i]];
-        if(strcmp(agent->room_id,a->active_room))continue;
+        if(agent->dismissed||strcmp(agent->room_id,a->active_room))continue;
         int selected=!strcmp(a->selected,agent->id);
         /* live vs idle is the distinction that matters: an observed session is
          * one the app cannot type into and must not look interactive. */
@@ -1685,17 +1691,24 @@ static void draw_agentbar(App *a,lj_rect bar){
         else if(dead)snprintf(label,sizeof(label),"%s ·",icon(agent->agent));
         else snprintf(label,sizeof(label),"%s %s·%s",icon(agent->agent),agent->agent,
                  !strcmp(role,"lead")?"LEAD":!strcmp(role,"reviewer")?"REV":"WRK");
-        int w=(agent_chip_slot_cells(agent)+2)*CELLW;
+        /* +2 cells for the chip's own ✕ (the operator, 2026-10-26: "agent tabs i cant close"). */
+        int w=(agent_chip_slot_cells(agent)+4)*CELLW;
         /* Bound the natural widest form by this roster's viewport budget.
          * Keep enough for the identity/longest role; only status detail is
          * elided in crowded strips. Neither budget depends on live state. */
         char normal[128];snprintf(normal,sizeof normal,"%s %s·LEAD",icon(agent->agent),agent->agent);
-        int minimum=label_cells(normal)+2,limit=share>minimum?share:minimum;
+        int minimum=label_cells(normal)+4,limit=share>minimum?share:minimum;
         if(w>limit*CELLW)w=limit*CELLW;
         if(x+w>chipmax){hidden++;continue;}   /* ⚠ never draw under OPEN HERE */
-        char shown[256];fit(shown,sizeof shown,label,w/CELLW-2);
+        char shown[256];fit(shown,sizeof shown,label,w/CELLW-4);
         tab_slot(a,(lj_rect){x,bar.y,w,CELLH},shown,selected,
                  agent->unavailable[0]?RED:dead?lj_theme_rgb(LJ_THEME_ENDED):selected?TEXT:DIM,H_SESSION,agent->id,NULL,0);
+        /* The ✕ is its own smaller hit inside the chip, so it wins the click. A
+         * live terminal asks first: the ✕ turns red and the next click stops it. */
+        {   lj_rect x_r={x+w-2*CELLW,bar.y,2*CELLW,CELLH};int asking=!strcmp(a->stop_confirm,agent->id);
+            if(hovered(a,H_AGENT_CLOSE,0,agent->id))tab_fill(x_r,SURF3);
+            tab_text(x_r.x+CELLW/2,bar.y,lj_theme_glyph(LJ_THEME_CLOSE),asking?RED:DIM,CELLW);
+            hit(a,x_r,H_AGENT_CLOSE,0,agent->id);}
         x+=w;
     }
     if(!members)tab_text(bar.x,bar.y,"no agents · OPEN HERE to start",DIM,chipmax-bar.x);
@@ -4259,6 +4272,17 @@ static void activate(App *a,Hit *h){
         json_object *o=json_object_new_object();jadd(o,"action","control");jadd(o,"session",h->id);jadd(o,"operation",h->index==0?"submit":h->index==1?"interrupt":"stop");if(h->index==2)json_object_object_add(o,"confirmed",json_object_new_boolean(1));a->stop_confirm[0]=0;request(a,o);
     }
     else if(h->kind==H_FULL){if(a->full[0])a->full[0]=0;else copy(a->full,sizeof(a->full),a->focus[0]?a->focus:a->selected[0]?a->selected:"room");}
+    else if(h->kind==H_AGENT_CLOSE){
+        Session *s=session(a,h->id);if(!s)return;
+        int live=terminal_tile(s)&&!session_dead(s)&&!a->demo;
+        if(live&&strcmp(a->stop_confirm,s->id)){
+            copy(a->stop_confirm,sizeof(a->stop_confirm),s->id);
+            char why[160];snprintf(why,sizeof why,"%s is running · click \u2715 again to stop it and close the tab",s->agent);toast(a,why);return;}
+        a->stop_confirm[0]=0;
+        if(a->demo){s->dismissed=1;lj_dock_remove(&a->dock,s->id);if(!strcmp(a->focus,s->id))copy(a->focus,sizeof(a->focus),"room");toast(a,"Tab closed · the session stays in Team");return;}
+        json_object *o=json_object_new_object();jadd(o,"action","session_close");jadd(o,"session",s->id);
+        if(live)json_object_object_add(o,"confirmed",json_object_new_boolean(1));request(a,o);
+    }
     else if(h->kind==H_HIDE){lj_dock_remove(&a->dock,h->id);if(!strcmp(h->id,"media")){lj_media_close(&a->media);a->has_media=0;}if(!strcmp(h->id,"canvas")){lj_canvas_close(&a->canvas);a->has_canvas=0;a->canvas_drawing=0;}if(!strcmp(a->focus,h->id))copy(a->focus,sizeof(a->focus),"room");a->full[0]=0;save_layout(a);}
     else if(h->kind==H_CANVAS)open_canvas(a);
     else if(h->kind==H_CREATE){const char *agents[]={"claude","codex","deepseek","shell"};json_object *o=json_object_new_object();jadd(o,"action","create");jadd(o,"agent",agents[h->index]);jadd(o,"room",a->active_room);request(a,o);}
